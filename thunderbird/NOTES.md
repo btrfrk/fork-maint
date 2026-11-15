@@ -11,7 +11,7 @@
   means tracking comm's release branch, where CI also publishes
   artifacts.
 - Package: `arch/PKGBUILD` installs the `./mach package` tarball in the
-  style of a `-bin` package, as `thunderbird-zoom` with
+  style of a `-bin` package, as `thunderbird-btrfrk` with
   `provides=thunderbird` and `conflicts=thunderbird`. With the official
   name, `pacman -Syu` would replace the build as soon as Arch bumps the
   version. Paths, desktop file name and vendor prefs match

@@ -27,15 +27,15 @@ box:                                # cwd: the mozilla tree in the workspace
     - >-
       rm -rf "$HOME/pkg/thunderbird" && mkdir -p "$HOME/pkg" out && cp -r "$FORK_DIR/arch" "$HOME/pkg/thunderbird"
       && cd "$HOME/pkg/thunderbird" && PKGDEST="$OLDPWD/out" makepkg -f
-  artifact: out/thunderbird-zoom-*.pkg.tar.zst
+  artifact: out/thunderbird-btrfrk-*.pkg.tar.zst
 package:
-  name: thunderbird-zoom            # provides and conflicts thunderbird
+  name: thunderbird-btrfrk          # provides and conflicts thunderbird
   from: the ./mach package tarball, not Arch's source PKGBUILD
   version: <application.ini Version>.<BuildID>, computed by pkgver()
 deploy:
   kind: arch                        # the report carries the pacman -U command
-  package: thunderbird-zoom
-deployed_check: pacman -Q thunderbird-zoom
+  package: thunderbird-btrfrk
+deployed_check: pacman -Q thunderbird-btrfrk
 upstreaming:
   bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1689030
   review: https://phabricator.services.mozilla.com/D328925

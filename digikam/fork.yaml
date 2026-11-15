@@ -23,12 +23,12 @@ box:
   verify: []                        # the package build compiles the whole tree
   build:
     - mkdir -p out && cd "$HOME/pkg/digikam" && SRCDEST="$HOME/srcdest" PKGDEST="$OLDPWD/out" makepkg -f --holdver
-  artifact: out/digikam-quickfilter-git-*.pkg.tar.zst
+  artifact: out/digikam-btrfrk-*.pkg.tar.zst
 package:
-  name: digikam-quickfilter-git     # published on the AUR; arch/ is the package source
+  name: digikam-btrfrk              # published on the AUR; arch/ is the package source
 deploy:
   kind: arch                        # the report carries the pacman -U command
-  package: digikam-quickfilter-git
+  package: digikam-btrfrk
   # aur (host config): the AUR package's git URL; arch/ is pushed there when it changes
-deployed_check: pacman -Q digikam-quickfilter-git
+deployed_check: pacman -Q digikam-btrfrk
 upstreaming: none                   # don't propose, don't push to origin, no MRs

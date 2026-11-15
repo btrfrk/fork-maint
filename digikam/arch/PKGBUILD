@@ -7,7 +7,7 @@
 # configure time; prepare() lifts the cap, as extra/digikam's opencv-5.patch
 # does. A sed rather than a patch: the comments around the line change.
 
-pkgname=digikam-quickfilter-git
+pkgname=digikam-btrfrk
 pkgver=9.2.0.r69179.980708c
 pkgrel=2
 pkgdesc='An advanced digital photo management application - quickfilter fork (git build)'
@@ -80,7 +80,7 @@ optdepends=('darktable: RAW import'
             'qt6-imageformats: support for additional image formats (WEBP, TIFF)'
             'rawtherapee: RAW import')
 provides=(digikam)
-conflicts=(digikam)
+conflicts=(digikam digikam-quickfilter-git)
 source=(git+https://invent.kde.org/gruber/digikam.git#branch=quickfilter)
 sha256sums=('SKIP')
 
