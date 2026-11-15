@@ -3,9 +3,11 @@
 # Builds out of tree from the checkout named by AZAHAR_SRC, submodules
 # initialized; the source tree is never modified.
 #
-# All third-party libraries come from the bundled submodules, as in upstream's
-# own Linux builds. The system-library route (AUR azahar-git) needs cpp-jwt,
-# robin-map, ffmpeg4.4 and others that extra does not carry.
+# Third-party libraries come from the bundled submodules, as in upstream's own
+# Linux builds. The system-library route (AUR azahar-git) needs cpp-jwt,
+# robin-map, ffmpeg4.4 and others that extra does not carry. SDL2 is the
+# exception: it is the system sdl2-compat, as in the AUR azahar package, so
+# controller handling matches that package.
 #
 # FFmpeg support (video dumping) needs FFmpeg 7 exactly; extra has a newer
 # one, so it is off.
@@ -18,7 +20,7 @@ pkgdesc='Nintendo 3DS emulator based on Citra - button-layers fork'
 arch=(x86_64)
 url='https://azahar-emu.org/'
 license=(GPL-2.0-or-later)
-depends=(glibc hicolor-icon-theme libbacktrace libgcc libstdc++ qt6-base qt6-multimedia zydis)
+depends=(glibc hicolor-icon-theme libbacktrace libgcc libstdc++ qt6-base sdl2-compat qt6-multimedia zydis)
 makedepends=(cmake git ninja qt6-tools)
 provides=("$_pkgname")
 conflicts=("$_pkgname")
@@ -43,6 +45,7 @@ build() {
     -DENABLE_QT_TRANSLATION=ON \
     -DENABLE_QT_UPDATE_CHECKER=OFF \
     -DENABLE_DISCORD_RPC=OFF \
+    -DUSE_SYSTEM_SDL2=ON \
     -DENABLE_FFMPEG=OFF \
     -DENABLE_TESTS=OFF \
     -DENABLE_LTO=OFF \
