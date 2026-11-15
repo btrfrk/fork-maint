@@ -1,0 +1,730 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["pyyaml"]
+# ///
+"""Bring forks up to date with upstream, build them in a box, deploy them.
+
+usage: fork-maint [--force] [--no-push] [--no-deploy] [--no-agent] [fork ...]
+
+Each fork is a directory in the forks repo with a fork.yaml (see README.md).
+The host config ($XDG_CONFIG_HOME/fork-maint/config.yaml) is merged over it
+and supplies what is specific to this machine: checkouts, remotes, keys.
+Without arguments every fork that has a `box:` section is processed. Forks
+are processed one at a time; a failure in one never stops the others. The
+run writes one log per step and a report to
+$XDG_STATE_HOME/fork-maintenance/<date>/.
+
+Per fork: fetch upstream and inputs, stop if nothing moved past the
+fork-deployed tag, back the branch up, rebase it, generate the devShell
+environment on the host, run the prepare, verify and build steps inside a
+bwrap box, push the fork remote, then sign and deploy on the host.
+
+The box sees the system read-only, /nix/store read-only, a persistent box
+home mounted over the real home, the workspace clone read-write, the fork's
+directory in this repo read-only at /work/fork, and the declared inputs
+read-only. It has no credentials: signing keys and the F-Droid repo are
+only touched by host-side steps after the box succeeded. Only the `fetch`
+phase has a network route; prepare, verify and build run with the network
+namespace closed and must work from what fetch left in the box home and
+the workspace.
+"""
+
+import argparse
+import datetime
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+FORKS = Path(__file__).resolve().parent.parent
+HOME = Path.home()
+CONFIG = Path(
+    os.environ.get("FORK_MAINT_CONFIG")
+    or Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "fork-maint/config.yaml"
+)
+STATE_HOME = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state")
+STATE_ROOT = STATE_HOME / "fork-maint"
+RUN_ROOT = STATE_HOME / "fork-maintenance"
+NOW = datetime.datetime.now(datetime.UTC)
+TODAY = NOW.strftime("%Y-%m-%d")
+LOG_DIR = RUN_ROOT / TODAY
+
+
+# Steps whose failure an agent turn may fix. Fetch failures are network or
+# host state; deploy failures are host state.
+AGENT_STEPS = ("rebase", "verify", "build")
+
+
+class ForkError(Exception):
+    """A step failed; the message is the report line."""
+
+
+def host_config():
+    if not CONFIG.exists():
+        return {}
+    cfg = yaml.safe_load(CONFIG.read_text()) or {}
+    if not isinstance(cfg, dict) or not isinstance(cfg.get("forks") or {}, dict):
+        sys.exit(f"{CONFIG}: expected a mapping with a `forks:` mapping")
+    return cfg
+
+
+def agent_config(host):
+    cfg = {"harness": "none", "max_turns": 40, "timeout_minutes": 45}
+    cfg.update(host.get("agent") or {})
+    return cfg
+
+
+def merge(base, over):
+    """`over` merged into `base`: mappings recursively, other values replaced."""
+    if isinstance(base, dict) and isinstance(over, dict):
+        merged = dict(base)
+        for key, value in over.items():
+            merged[key] = merge(base[key], value) if key in base else value
+        return merged
+    return over
+
+
+def null_keys(value, path=()):
+    """Dotted paths of the null values in nested mappings."""
+    if value is None:
+        yield ".".join(path)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from null_keys(item, (*path, str(key)))
+
+
+def load_fork(name, host):
+    """fork.yaml with the host config's `forks.<name>` merged over it.
+
+    A null in fork.yaml marks a value the host config must supply.
+    """
+    fork_dir = FORKS / name
+    cfg = merge(yaml.safe_load((fork_dir / "fork.yaml").read_text()),
+                (host.get("forks") or {}).get(name) or {})
+    missing = list(null_keys(cfg))
+    if missing:
+        raise ForkError(f"not set: {', '.join(missing)}; add under forks.{name} in {CONFIG}")
+    cfg = expand(cfg)
+    if cfg.get("flake"):
+        cfg["flake"] = os.path.normpath(fork_dir / cfg["flake"])
+    return cfg
+
+
+def has_box(fork_yaml):
+    return "box" in (yaml.safe_load(fork_yaml.read_text()) or {})
+
+
+def expand(value):
+    if isinstance(value, str):
+        return os.path.expanduser(value)
+    if isinstance(value, list):
+        return [expand(v) for v in value]
+    if isinstance(value, dict):
+        return {k: expand(v) for k, v in value.items()}
+    return value
+
+
+def run(argv, *, cwd=None, log=None, check=True, env=None, input=None):
+    """Run a command, appending its output to `log` when given."""
+    if log is not None:
+        with open(log, "a") as fh:
+            fh.write(f"\n$ {' '.join(str(a) for a in argv)}\n")
+            fh.flush()
+            proc = subprocess.run(
+                argv, cwd=cwd, stdout=fh, stderr=subprocess.STDOUT, env=env, input=input
+            )
+    else:
+        proc = subprocess.run(
+            argv, cwd=cwd, capture_output=True, text=True, env=env, input=input
+        )
+    if check and proc.returncode != 0:
+        where = f", see {log.name}" if log is not None else f": {proc.stderr.strip()}"
+        raise ForkError(f"`{argv[0]} {argv[1] if len(argv) > 1 else ''}` failed{where}")
+    return proc
+
+
+def git(repo, *args, check=True):
+    return run(["git", "-C", str(repo), *args], check=check)
+
+
+def git_out(repo, *args):
+    return git(repo, *args).stdout.strip()
+
+
+def artifact_name(pattern, artifact, fork, build_number):
+    """Name of the copied artifact.
+
+    A glob names a versioned file (packages); keep the name. A fixed name
+    (app-release.apk) gets the fork and build number instead.
+    """
+    if any(c in pattern for c in "*?["):
+        return artifact.name
+    return f"{fork}-{build_number}{artifact.suffix}"
+
+
+def pkginfo_version(pkginfo):
+    """(version, pkgver, pkgrel) from a package's .PKGINFO."""
+    fields = dict(line.split(" = ", 1) for line in pkginfo.splitlines() if " = " in line)
+    version = fields["pkgver"]  # [epoch:]pkgver-pkgrel
+    pkgver, _, pkgrel = version.rpartition(":")[2].rpartition("-")
+    return version, pkgver, pkgrel
+
+
+def nix_system():
+    return run(["nix", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"]).stdout.strip()
+
+
+class Fork:
+    def __init__(self, name, cfg, args):
+        self.name = name
+        self.args = args
+        self.dir = FORKS / name
+        self.cfg = cfg
+        self.repo = Path(self.cfg["repo"])
+        self.branch = self.cfg["fork"]["branch"]
+        self.state = STATE_ROOT / name
+        self.box_home = self.state / "home"
+        self.ws = self.state / "src"
+        self.out = self.state / "out"
+        self.lines = []  # report detail lines
+        self.attention = []
+        self.status = "blocked"
+        for d in (self.state, self.box_home, self.out, LOG_DIR):
+            d.mkdir(parents=True, exist_ok=True)
+
+    def log(self, step):
+        return LOG_DIR / f"{self.name}-{step}.log"
+
+    def note(self, line):
+        self.lines.append(line)
+
+    # -- upstream -----------------------------------------------------------
+
+    def fetch(self):
+        up = self.cfg["upstream"]
+        log = self.log("fetch")
+        run(["git", "fetch", "--prune", up["remote"]], cwd=self.repo, log=log)
+        for path in (self.cfg.get("inputs") or {}).values():
+            if (Path(path) / ".git").exists():
+                run(["git", "fetch", "--prune"], cwd=path, log=log, check=False)
+        root = (self.cfg.get("workspace") or {}).get("root_repo")
+        if root:
+            run(["git", "fetch", "--prune"], cwd=root, log=log, check=False)
+
+    def tag_rev(self, tag):
+        proc = git(self.repo, "rev-parse", "-q", "--verify", f"{tag}^{{commit}}", check=False)
+        return proc.stdout.strip() if proc.returncode == 0 else None
+
+    def new_base(self):
+        up = self.cfg["upstream"]
+        track = up["track"]
+        if "branch" in track:
+            ref = f"{up['remote']}/{track['branch']}"
+        elif "tags" in track:
+            tags = git_out(
+                self.repo, "tag", "-l", track["tags"], "--sort=-version:refname"
+            ).split()
+            if not tags:
+                raise ForkError(f"no tag matches {track['tags']}")
+            ref = tags[0]
+        else:
+            raise ForkError("upstream.track needs `branch` or `tags`")
+        return ref, git_out(self.repo, "rev-parse", ref)
+
+    def rebase(self):
+        ref, new_base = self.new_base()
+        tip = git_out(self.repo, "rev-parse", self.branch)
+        cur_base = git_out(self.repo, "merge-base", new_base, self.branch)
+        built = self.tag_rev("fork-built")
+        deployed = self.tag_rev("fork-deployed")
+        self.old_base, self.new_base_rev, self.base_ref = cur_base, new_base, ref
+        auto_deploy = self.cfg.get("deploy", {}).get("kind") == "fdroid"
+        if (new_base == cur_base and built == tip and (not auto_deploy or deployed == tip)
+                and not self.args.force):
+            self.status = "up to date"
+            return False
+        if git_out(self.repo, "status", "--porcelain", "--untracked-files=no"):
+            raise ForkError(f"{self.repo} has uncommitted changes")
+        if new_base == cur_base:
+            self.note(f"base unchanged at {ref} {new_base[:10]}")
+            return True
+
+        backup = f"backup/{self.branch}-{NOW:%Y%m%d}"
+        if git(self.repo, "rev-parse", "-q", "--verify", backup, check=False).returncode != 0:
+            git(self.repo, "branch", backup, self.branch)
+        self.note(f"backup: {backup}")
+
+        # Files where upstream's version is always taken at a conflict. The
+        # fork regenerates them at build time (lock files).
+        wins = (self.cfg.get("rebase") or {}).get("upstream_wins") or []
+        if wins:
+            attributes = self.repo / ".git/info/attributes"
+            attributes.parent.mkdir(exist_ok=True)
+            have = attributes.read_text() if attributes.exists() else ""
+            for path in wins:
+                line = f"{path} merge=ours\n"
+                if line not in have:
+                    have += line
+            attributes.write_text(have)
+            git(self.repo, "config", "merge.ours.driver", "true")
+
+        log = self.log("rebase")
+        proc = run(
+            ["git", "-c", "rerere.enabled=true", "rebase", new_base, self.branch],
+            cwd=self.repo, log=log, check=False,
+        )
+        if proc.returncode != 0:
+            conflicts = git_out(self.repo, "diff", "--name-only", "--diff-filter=U").split()
+            git(self.repo, "rebase", "--abort", check=False)
+            self.failed_step = "rebase"
+            raise ForkError(
+                f"rebase onto {ref} {new_base[:10]} conflicts in "
+                f"{', '.join(conflicts) or '(see log)'}; branch left at {tip[:10]}"
+            )
+        self.note(f"rebased onto {ref} {new_base[:10]} (was {cur_base[:10]})")
+        return True
+
+    # -- environment and box ------------------------------------------------
+
+    def environment(self):
+        flake = self.cfg.get("flake")
+        log = self.log("env")
+        if not flake:
+            # System toolchain (makepkg): nothing to realize, the box's own bash.
+            (self.state / "env.sh").write_text("")
+            self.shell = "/usr/bin/bash"
+            return
+        run(
+            ["nix", "develop", flake, "--profile", str(self.state / "env-profile"), "-c", "true"],
+            log=log,
+        )
+        env_sh = run(["nix", "print-dev-env", flake]).stdout
+        (self.state / "env.sh").write_text(env_sh)
+        self.shell = run(
+            ["nix", "eval", "--raw", f"{flake}#devShells.{nix_system()}.default.stdenv.shell"]
+        ).stdout.strip()
+
+    def workspace(self):
+        ws_cfg = self.cfg.get("workspace") or {}
+        root = ws_cfg.get("root_repo")
+        if root:
+            # The fork repo sits inside another tree (comm inside mozilla). The
+            # workspace is a clone of that tree at the host repo's upstream
+            # branch; the host checkout itself is never moved.
+            if not (self.ws / ".git").exists():
+                run(["git", "clone", "--quiet", root, str(self.ws)], log=self.log("env"))
+                git(self.ws, "config", "--add", "remote.origin.fetch",
+                    "+refs/remotes/origin/*:refs/remotes/host/*")
+            git(self.ws, "fetch", "--quiet", "--prune", "origin")
+            track = ws_cfg["root_track"]
+            ref = "host/" + track[len("origin/"):] if track.startswith("origin/") else track
+            git(self.ws, "checkout", "--quiet", "--detach", ref)
+            git(self.ws, "reset", "--quiet", "--hard")
+            target = self.ws / ws_cfg["subdir"]
+        else:
+            target = self.ws
+        if not (target / ".git").exists():
+            run(["git", "clone", "--quiet", str(self.repo), str(target)], log=self.log("env"))
+        git(target, "fetch", "--quiet", "origin", self.branch)
+        # A local branch, not a detached head: makepkg source mirrors taken
+        # from the workspace need the branch name.
+        # --force: the box regenerates tracked files (pubspec.lock), which
+        # would otherwise block the checkout when the new tip changes them.
+        git(target, "checkout", "--quiet", "--force", "-B", self.branch, "FETCH_HEAD")
+        git(target, "reset", "--quiet", "--hard")
+
+    def box(self, command, log, extra_env=None, network=False):
+        """Run one shell command inside the box, in the workspace."""
+        inputs = self.cfg.get("inputs") or {}
+        argv = [
+            "bwrap", "--unshare-all", *(["--share-net"] if network else []),
+            "--die-with-parent", "--new-session",
+            "--ro-bind", "/usr", "/usr",
+            "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
+            "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin",
+            "--ro-bind", "/etc", "/etc",
+            "--ro-bind", "/nix/store", "/nix/store",
+            # makepkg reads the package database to check dependencies.
+            *(["--ro-bind", "/var/lib/pacman", "/var/lib/pacman"] if Path("/var/lib/pacman").exists() else []),
+            "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+            # The box home sits over the real home: the JDK takes user.home
+            # from the passwd entry, not from HOME.
+            "--bind", str(self.box_home), str(HOME),
+            "--bind", str(self.ws), str(self.ws),
+            "--ro-bind", str(self.state / "env.sh"), "/work/env.sh",
+            "--ro-bind", str(self.dir), "/work/fork",
+            "--clearenv",
+            "--setenv", "FORK_DIR", "/work/fork",
+            "--setenv", "HOME", str(HOME), "--setenv", "USER", os.environ.get("USER", "box"),
+            "--setenv", "PATH", "/usr/bin", "--setenv", "TERM", "dumb",
+            "--setenv", "LANG", "C.UTF-8",
+            # Only one uid is mapped in the box, so a real chown to root fails
+            # with EINVAL, which libfakeroot does not tolerate like EPERM.
+            "--setenv", "FAKEROOTDONTTRYCHOWN", "1",
+            "--setenv", "FORK_CMD", command,
+            "--chdir", str(self.ws),
+        ]
+        for name, path in inputs.items():
+            argv += ["--ro-bind", path, f"/inputs/{name}", "--setenv", f"INPUT_{name}", f"/inputs/{name}"]
+        for key, value in (extra_env or {}).items():
+            argv += ["--setenv", key, value]
+        argv += ["--", self.shell, "-c", 'set -eo pipefail; source /work/env.sh; eval "$FORK_CMD"']
+        return run(argv, log=log, check=False)
+
+    def box_steps(self):
+        box_cfg = self.cfg["box"]
+        build_number = NOW.strftime("%y%m%d%H")
+        self.build_number = build_number
+        env = {"BUILD_NUMBER": build_number}
+        if self.cfg.get("deploy", {}).get("kind") == "fdroid":
+            # A throwaway key makes Gradle produce a complete APK; the host
+            # re-signs it with the real key.
+            env["BOX_KEYSTORE"] = str(HOME / "box.keystore")
+            env["BOX_KEYSTORE_PASS"] = str(HOME / "box.pass")
+            if not (self.box_home / "box.keystore").exists():
+                (self.box_home / "box.pass").write_text("box-throwaway")
+                proc = self.box(
+                    "keytool -genkeypair -keystore $BOX_KEYSTORE -storepass:file $BOX_KEYSTORE_PASS "
+                    "-keypass:file $BOX_KEYSTORE_PASS -alias box -keyalg RSA -keysize 2048 "
+                    "-validity 10000 -dname CN=box",
+                    self.log("env"), env,
+                )
+                if proc.returncode != 0:
+                    raise ForkError(f"box keystore: keytool failed, see {self.log('env').name}")
+        for phase, network in (("fetch", True), ("prepare", False), ("verify", False), ("build", False)):
+            log = self.log(phase)
+            for command in box_cfg.get(phase) or []:
+                if not isinstance(command, str):
+                    self.failed_step = phase
+                    raise ForkError(f"{phase}: command is not a string (quote it; a `: ` makes YAML "
+                                    f"read a mapping): {command!r}"[:200])
+                proc = self.box(command, log, env, network=network)
+                if proc.returncode != 0:
+                    self.failed_step = phase
+                    raise ForkError(f"{phase} failed: `{command[:60]}`, see {log.name}")
+            self.note(f"{phase}: ok" + (" (network)" if network else ""))
+        pattern = box_cfg["artifact"]
+        matches = sorted(glob.glob(str(self.ws / pattern)))
+        if len(matches) != 1:
+            self.failed_step = "build"
+            raise ForkError(f"expected one artifact matching {pattern}, found {len(matches)}")
+        artifact = Path(matches[0])
+        self.artifact = self.out / artifact_name(pattern, artifact, self.name, build_number)
+        shutil.copy2(artifact, self.artifact)
+        git(self.repo, "tag", "-f", "fork-built", self.branch)
+
+    # -- host side ----------------------------------------------------------
+
+    def publish(self):
+        remote = self.cfg["fork"].get("remote")
+        if not remote:
+            return
+        if self.args.no_push:
+            self.note(f"--no-push; {remote}/{self.branch} not pushed")
+            return
+        run(
+            ["git", "push", "--force-with-lease", remote, self.branch],
+            cwd=self.repo, log=self.log("publish"),
+        )
+        self.note(f"pushed {remote}/{self.branch}")
+
+    def tool(self, name):
+        """Argv prefix for an SDK build tool on the host (apksigner, aapt2).
+
+        The devShell sets ANDROID_HOME but does not put build-tools on PATH.
+        """
+        return [
+            "nix", "develop", self.cfg["flake"], "-c", "sh", "-c",
+            f'exec "$ANDROID_HOME"/build-tools/*/{name} "$@"', name,
+        ]
+
+    def deploy_fdroid(self):
+        d = self.cfg["deploy"]
+        log = self.log("deploy")
+        signed = self.artifact.with_name(self.artifact.stem + "-signed.apk")
+        run(
+            self.tool("apksigner") + [
+                "sign", "--ks", d["keystore"], "--ks-key-alias", d["key_alias"],
+                "--ks-pass", f"file:{d['key_pass_file']}", "--out", str(signed), str(self.artifact),
+            ],
+            log=log,
+        )
+        certs = run(self.tool("apksigner") + ["verify", "--print-certs", str(signed)]).stdout
+        digests = re.findall(r"Signer #\d+ certificate SHA-256 digest: ([0-9a-f]+)", certs)
+        if digests != [d["cert_sha256"]]:
+            raise ForkError(f"signed APK has signers {digests}, expected [{d['cert_sha256']}]")
+        badging = run(self.tool("aapt2") + ["dump", "badging", str(signed)]).stdout
+        m = re.search(r"package: name='([^']+)' versionCode='(\d+)'", badging)
+        if not m or m.group(1) != d["app_id"]:
+            raise ForkError(f"APK is {m.group(1) if m else '?'}, expected {d['app_id']}")
+        version_code = int(m.group(2))
+        self.note(f"signed {signed.name}, {d['app_id']} versionCode {version_code}")
+
+        repo_dir = Path(d["repo_dir"])
+        index = repo_dir / "repo/index-v2.json"
+        current = 0
+        if index.exists():
+            versions = json.loads(index.read_text())["packages"].get(d["app_id"], {}).get("versions", {})
+            current = max((v["manifest"]["versionCode"] for v in versions.values()), default=0)
+        if version_code <= current:
+            raise ForkError(f"versionCode {version_code} is not above the repo's {current}; not deployed")
+        if self.args.no_deploy:
+            self.status = "built, not deployed"
+            self.attention.append(f"{self.name}: --no-deploy; signed APK at {signed}")
+            return
+
+        target = repo_dir / "repo" / f"{d['app_id']}_{version_code}.apk"
+        shutil.copy2(signed, target)
+        target.chmod(0o644)
+        older = sorted(
+            glob.glob(str(repo_dir / "repo" / f"{d['app_id']}_*.apk")),
+            key=lambda p: int(re.search(r"_(\d+)\.apk$", p).group(1)),
+        )
+        for path in older[: -int(d.get("keep", 3))]:
+            os.remove(path)
+        run(["fdroid", "update"], cwd=repo_dir, log=log)
+        run(["fdroid", "deploy", "-v"], cwd=repo_dir, log=log)
+        git(self.repo, "tag", "-f", "fork-deployed", self.branch)
+        self.status = "deployed"
+        self.note(f"deployed to {d['repo_dir']} as {target.name}")
+
+    def deploy_aur(self):
+        """Push the tracked files of arch/ to the AUR when they changed.
+
+        The published PKGBUILD carries the version just built. Where
+        pkgver() computes it, a new version alone is not a change.
+        """
+        if self.args.no_deploy or self.args.no_push:
+            # The AUR package builds from the fork remote, so its sources
+            # only go out together with the branch.
+            self.note("AUR: not published (--no-deploy or --no-push)")
+            return
+        log = self.log("deploy")
+        clone = self.state / "aur"
+        if not (clone / ".git").exists():
+            run(["git", "clone", "--quiet", self.cfg["deploy"]["aur"], str(clone)], log=log)
+        run(["git", "fetch", "--quiet", "origin"], cwd=clone, log=log)
+        git(clone, "checkout", "--quiet", "--force", "-B", "master", "origin/master")
+        git(clone, "clean", "-fdxq")
+
+        # .SRCINFO is generated, so it has no counterpart in arch/.
+        git(clone, "rm", "-rq", ".", ":(exclude).SRCINFO")
+        arch = self.dir / "arch"
+        for path in git_out(arch, "ls-files").splitlines():
+            (clone / path).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(arch / path, clone / path)
+        info = run(["bsdtar", "-xOqf", str(self.artifact), ".PKGINFO"]).stdout
+        version, pkgver, pkgrel = pkginfo_version(info)
+        pkgbuild = clone / "PKGBUILD"
+        text = pkgbuild.read_text()
+        for key, value in (("pkgver", pkgver), ("pkgrel", pkgrel)):
+            text, n = re.subn(rf"^{key}=.*$", f"{key}={value}", text, flags=re.M)
+            if n != 1:
+                raise ForkError(f"AUR: expected one {key}= line in {arch / 'PKGBUILD'}, found {n}")
+        pkgbuild.write_text(text)
+        computed = re.search(r"^pkgver\(\)", text, flags=re.M)
+        ignore = ["-I", "^pkgver=", "-I", "^pkgrel="] if computed else []
+        git(clone, "add", "-A")
+        if git(clone, "diff", "--cached", "--quiet", *ignore, check=False).returncode == 0:
+            self.note("AUR: package sources unchanged")
+            return
+
+        (clone / ".SRCINFO").write_text(run(["makepkg", "--printsrcinfo"], cwd=clone).stdout)
+        git(clone, "add", "-f", ".SRCINFO")
+        git(clone, "commit", "--quiet", "-m", f"upgpkg: {version}")
+        run(["git", "push", "origin", "master"], cwd=clone, log=log)
+        self.note(f"published to the AUR: {version}")
+
+    def deploy(self):
+        kind = self.cfg.get("deploy", {}).get("kind")
+        if kind == "fdroid":
+            self.deploy_fdroid()
+        elif kind == "arch":
+            # Installing needs sudo; the report carries the command.
+            self.status = "built, not deployed"
+            self.attention.append(f"{self.name}: install with `sudo pacman -U {self.artifact}`")
+            if self.cfg["deploy"].get("aur"):
+                self.deploy_aur()
+        else:
+            self.status = "built, not deployed"
+            self.attention.append(f"{self.name}: no automated deploy for kind {kind!r}; artifact {self.artifact}")
+
+    # -- driver -------------------------------------------------------------
+
+    def process(self):
+        self.failed_step = None
+        try:
+            self.run_steps()
+        finally:
+            self.write_record()
+
+    def config_path(self):
+        return LOG_DIR / f"{self.name}-config.yaml"
+
+    def write_record(self):
+        """Machine-readable outcome, for whatever picks up a blocked fork."""
+        record = {
+            "fork": self.name,
+            "status": self.status,
+            "failed_step": self.failed_step,
+            "repo": str(self.repo),
+            "branch": self.branch,
+            "base": getattr(self, "base_ref", None),
+            "new_base": getattr(self, "new_base_rev", None),
+            "workspace": str(self.ws),
+            "box_home": str(self.box_home),
+            "artifact": str(self.artifact) if getattr(self, "artifact", None) else None,
+            "attention": self.attention,
+            "notes": self.lines,
+            "agent": getattr(self, "agent", None),
+            "config": self.config_path().name,
+            "logs": sorted(p.name for p in LOG_DIR.glob(f"{self.name}-*.log")),
+        }
+        (LOG_DIR / f"{self.name}.json").write_text(json.dumps(record, indent=2) + "\n")
+        self.config_path().write_text(yaml.safe_dump(self.cfg, sort_keys=False))
+
+    def run_steps(self):
+        try:
+            if "box" not in self.cfg:
+                self.status = "not automated"
+                return
+            self.fetch()
+            if not self.rebase():
+                return
+            self.environment()
+            self.workspace()
+            self.box_steps()
+            self.publish()
+            self.deploy()
+        except ForkError as e:
+            self.attention.append(f"{self.name}: {e}")
+            self.status = "blocked"
+
+    # -- agent --------------------------------------------------------------
+
+    def agent_turn(self, cfg):
+        """One headless agent turn inside aisan on the fork repo.
+
+        The box roots at the repo, read-write, with this repo and the day's
+        log directory read-only. No keys, no network: the agent can commit
+        and nothing else; the rerun of the script is the judge.
+        """
+        harness = cfg["harness"]
+        record = LOG_DIR / f"{self.name}.json"
+        prompt = (FORKS / "agent/prompt.md").read_text()
+        prompt = (prompt.replace("<forks>", str(FORKS)).replace("<fork>", self.name)
+                  .replace("<config>", str(self.config_path())).replace("<record>", str(record)))
+        prompt += f"\n\nFork: {self.name}\n"
+        binds = self.state / "agent-binds.toml"
+        # A JSON array of strings is a valid TOML array.
+        binds.write_text(f"ro = {json.dumps([str(FORKS), str(LOG_DIR)])}\n")
+        if harness == "claude":
+            argv = ["aisan", "claude", str(self.repo), "--binds", str(binds), "--",
+                    "-p", prompt, "--permission-mode", "bypassPermissions",
+                    "--max-turns", str(cfg["max_turns"])]
+        elif harness == "codex":
+            model = ["--model", cfg["model"]] if cfg.get("model") else []
+            argv = ["aisan", "codex", str(self.repo), "--binds", str(binds), *model, "--",
+                    "exec", prompt]
+        else:
+            raise ForkError(f"unknown agent harness {harness!r}")
+        before = git_out(self.repo, "rev-parse", self.branch)
+        log = self.log("agent")
+        with open(log, "a") as fh:
+            fh.write(f"\n$ aisan {harness} {self.repo} (prompt {len(prompt)} chars)\n")
+            fh.flush()
+            try:
+                proc = subprocess.run(argv, stdout=fh, stderr=subprocess.STDOUT,
+                                      timeout=cfg["timeout_minutes"] * 60)
+                outcome = f"exit {proc.returncode}"
+            except subprocess.TimeoutExpired:
+                outcome = f"timed out after {cfg['timeout_minutes']} min"
+            except FileNotFoundError:
+                outcome = "aisan not found"
+        after = git_out(self.repo, "rev-parse", self.branch)
+        dirty = bool(git_out(self.repo, "status", "--porcelain", "--untracked-files=no"))
+        if before == after:
+            change = "no commit"
+        else:
+            n = git_out(self.repo, "rev-list", "--count", f"{before}..{after}") if \
+                git(self.repo, "merge-base", "--is-ancestor", before, after, check=False).returncode == 0 \
+                else "rebased,"
+            change = f"{n} new commits, tip {after[:10]}"
+        summary = f"agent ({harness}): {outcome}, {change}" + (", tree left dirty" if dirty else "")
+        self.agent = {"harness": harness, "outcome": outcome, "before": before, "after": after,
+                      "dirty": dirty, "log": log.name}
+        return summary
+
+    def report(self):
+        head = f"{self.name}: {self.status}"
+        if getattr(self, "old_base", None):
+            head = f"{self.name}: {self.old_base[:10]} -> {self.new_base_rev[:10]} ({self.base_ref}) | {self.status}"
+        return "\n".join([head] + [f"  - {line}" for line in self.lines])
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("forks", nargs="*")
+    parser.add_argument("--force", action="store_true", help="run even if nothing changed")
+    parser.add_argument("--no-push", action="store_true", help="do not push the fork remote")
+    parser.add_argument("--no-deploy", action="store_true", help="stop after signing")
+    parser.add_argument("--no-agent", action="store_true", help="never run an agent turn on a blocked fork")
+    args = parser.parse_args()
+    host = host_config()
+    agent = agent_config(host)
+
+    names = args.forks or sorted(p.parent.name for p in FORKS.glob("*/fork.yaml") if has_box(p))
+    for name in names:
+        if not (FORKS / name / "fork.yaml").exists():
+            sys.exit(f"no fork {name!r} in {FORKS}")
+    errors = [f"{CONFIG}: no fork {name!r} in {FORKS}"
+              for name in host.get("forks") or {} if not (FORKS / name / "fork.yaml").exists()]
+    forks = []
+    for name in names:
+        try:
+            cfg = load_fork(name, host)
+        except ForkError as e:
+            errors.append(f"{name}: {e}")
+            continue
+        fork = Fork(name, cfg, args)
+        fork.process()
+        if (fork.status == "blocked" and fork.failed_step in AGENT_STEPS
+                and agent["harness"] != "none" and not args.no_agent):
+            # One agent turn, then one more pass of the same fork. The
+            # second pass is the judge; its report replaces the first.
+            summary = fork.agent_turn(agent)
+            retry = Fork(name, cfg, args)
+            retry.agent = fork.agent
+            retry.lines.append(summary)
+            retry.process()
+            fork = retry
+        forks.append(fork)
+
+    attention = errors + [a for f in forks for a in f.attention]
+    report = [
+        f"# fork-maint {NOW:%Y-%m-%d %H:%M} UTC",
+        "",
+        "## Needs attention",
+        *([f"- {a}" for a in attention] or ["- nothing"]),
+        "",
+        "## Forks",
+        *(f.report() for f in forks),
+        "",
+    ]
+    text = "\n".join(report)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(LOG_DIR / "report.md", "a") as fh:
+        fh.write(text + "\n")
+    print(text)
+    sys.exit(1 if errors or any(f.status == "blocked" for f in forks) else 0)
+
+
+if __name__ == "__main__":
+    main()

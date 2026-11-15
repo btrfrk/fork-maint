@@ -1,0 +1,42 @@
+name: thunderbird
+repo: null                          # comm-central, nested in the mozilla checkout
+upstream:
+  remote: origin                    # https://github.com/thunderbird/thunderbird-desktop
+  track:
+    branch: main
+fork:
+  branch: main                      # one commit ahead of origin/main; no fork remote
+patches: git log --oneline origin/main..main
+  # Bug 1689030 - Add mail.message.zoom_percent to set the zoom of message bodies. r=mkmelin
+workspace:
+  root_repo: null                   # mozilla-firefox/firefox checkout; fetched, never moved
+  root_track: origin/main           # the artifact build follows mozilla main (.gecko_rev.yml: default)
+  subdir: comm
+flake: .                            # sets MOZCONFIG (artifact build), MOZ_OBJDIR and
+                                    # MOZBUILD_STATE_PATH under $XDG_STATE_HOME/thunderbird-build
+box:                                # cwd: the mozilla tree in the workspace
+  fetch:
+    # The artifact build is a download: prebuilt libxul and friends for the
+    # gecko revision, plus mach's own Python environment on first use.
+    - ./mach build
+  prepare: []
+  verify:
+    - ./mach test --headless comm/mail/base/test/browser/browser_zoom.js
+  build:
+    - ./mach package
+    - >-
+      rm -rf "$HOME/pkg/thunderbird" && mkdir -p "$HOME/pkg" out && cp -r "$FORK_DIR/arch" "$HOME/pkg/thunderbird"
+      && cd "$HOME/pkg/thunderbird" && PKGDEST="$OLDPWD/out" makepkg -f
+  artifact: out/thunderbird-zoom-*.pkg.tar.zst
+package:
+  name: thunderbird-zoom            # provides and conflicts thunderbird
+  from: the ./mach package tarball, not Arch's source PKGBUILD
+  version: <application.ini Version>.<BuildID>, computed by pkgver()
+deploy:
+  kind: arch                        # the report carries the pacman -U command
+  package: thunderbird-zoom
+deployed_check: pacman -Q thunderbird-zoom
+upstreaming:
+  bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1689030
+  review: https://phabricator.services.mozilla.com/D328925
+  check: needinfo answered, review state, landed (which version), pref renamed in review

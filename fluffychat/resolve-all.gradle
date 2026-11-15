@@ -1,0 +1,43 @@
+// Gradle init script for the fetch phase: resolve every resolvable
+// configuration of every project so that the later offline build finds all
+// artifacts in the Gradle cache. Run as
+//   ./gradlew -I "$FORK_DIR/resolve-all.gradle" resolveAll
+// after `flutter build apk --config-only` has written local.properties.
+allprojects {
+    tasks.register("resolveAll") {
+        notCompatibleWithConfigurationCache("resolves configurations eagerly")
+        doLast {
+            // Resolving adds detached configurations to the container, so
+            // iterate a snapshot, not the live view.
+            def resolvable = configurations.findAll { it.canBeResolved }
+            resolvable.each { c ->
+                try {
+                    c.resolve()
+                } catch (Exception e) {
+                    logger.warn("resolveAll: ${project.path} ${c.name}: ${e.message}")
+                }
+            }
+            // The Android Gradle plugin resolves its lint tooling in a
+            // detached configuration while the release build runs. Its
+            // version is the plugin's tools-base version.
+            def versionClass = null
+            try {
+                versionClass = project.buildscript.classLoader.loadClass("com.android.Version")
+            } catch (ClassNotFoundException ignored) {
+            }
+            if (versionClass != null) {
+                def tools = versionClass.getField("ANDROID_TOOLS_BASE_VERSION").get(null)
+                def lint = project.dependencies.create("com.android.tools.lint:lint-gradle:${tools}")
+                def conf = project.configurations.detachedConfiguration(lint)
+                conf.attributes {
+                    it.attribute(org.gradle.api.attributes.Usage.USAGE_ATTRIBUTE,
+                        project.objects.named(org.gradle.api.attributes.Usage, org.gradle.api.attributes.Usage.JAVA_RUNTIME))
+                    it.attribute(org.gradle.api.attributes.java.TargetJvmEnvironment.TARGET_JVM_ENVIRONMENT_ATTRIBUTE,
+                        project.objects.named(org.gradle.api.attributes.java.TargetJvmEnvironment,
+                            org.gradle.api.attributes.java.TargetJvmEnvironment.STANDARD_JVM))
+                }
+                conf.resolve()
+            }
+        }
+    }
+}

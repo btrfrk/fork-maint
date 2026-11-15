@@ -1,0 +1,6 @@
+line-length = 120
+target-version = "py311"
+include = ["bin/fork-maint", "tests/*.py"]
+
+[lint]
+select = ["E", "F", "W", "B", "UP", "I"]

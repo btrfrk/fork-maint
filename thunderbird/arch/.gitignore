@@ -1,0 +1,8 @@
+*
+!PKGBUILD
+!.gitignore
+!*.patch
+!*.desktop
+!vendor-prefs.js
+!distribution.ini
+!policies.json

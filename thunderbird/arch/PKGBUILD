@@ -1,0 +1,97 @@
+# Maintainer: Jakob Linke <jakob@linke.cx>
+# Thunderbird Daily from the local comm-central artifact build, with the
+# message zoom patch (bug 1689030). Packages the tarball that ./mach package
+# writes; the build itself runs in the forks devShell beforehand.
+#
+# Replaces extra/thunderbird: same paths, provides and conflicts, so the
+# profile, the desktop file name and existing launcher pins keep working.
+# Layout and vendor prefs follow extra/thunderbird. The icons come from the
+# tarball and the system CA store is linked in, as AUR thunderbird-beta-bin
+# does for Mozilla's prebuilt binaries.
+
+pkgname=thunderbird-zoom
+_pkgname=thunderbird
+pkgver=161.0a1.20261031083249
+pkgrel=1
+pkgdesc='Thunderbird Daily with the message zoom patch, from the local artifact build'
+arch=(x86_64)
+url='https://www.thunderbird.net/'
+license=(MPL-2.0 GPL-2.0-only LGPL-2.1-only)
+depends=(gtk3 dbus-glib libxt nss hunspell alsa-lib mime-types ttf-font)
+optdepends=('hunspell-en_us: Spell checking, American English'
+            'hyphen: Hyphenation'
+            'libnotify: Notification integration'
+            'libotr: OTR support for active one-to-one chats')
+makedepends=(unzip)
+provides=(thunderbird)
+conflicts=(thunderbird)
+source=(org.mozilla.Thunderbird.desktop
+        vendor-prefs.js
+        distribution.ini
+        policies.json)
+sha256sums=('cc7c3ed80b8ff04d1edf97ddd977aab59fc2354526eb3835b3a91df09fa40d90'
+            '230188a56dfbbf22c1a9c5e8790fb2974634328c37251ad37112a4e9f1b3ca36'
+            '8dd6ca6a7ecd361da5166fa487c76ae1c65a1563f995d1db036fec1934078d0b'
+            'e977c3d690224dd727d8761d2c0a66ba41bfd02ae0fd7850c4545d06b5a8e63c')
+
+# Where ./mach package left its tarball: MOZ_OBJDIR as the forks devShell
+# sets it.
+_objdir=${MOZ_OBJDIR:-$HOME/.local/state/thunderbird-build/obj-artifact}
+
+prepare() {
+  local tarballs=("$_objdir"/dist/thunderbird-*.linux-x86_64.tar.xz)
+  if (( ${#tarballs[@]} != 1 )) || [[ ! -f ${tarballs[0]} ]]; then
+    error "expected one thunderbird-*.linux-x86_64.tar.xz in $_objdir/dist"
+    return 1
+  fi
+  rm -rf "$srcdir/thunderbird"
+  bsdtar -xf "${tarballs[0]}" -C "$srcdir"
+}
+
+pkgver() {
+  local ini="$srcdir/thunderbird/application.ini"
+  printf '%s.%s' "$(sed -n 's/^Version=//p' "$ini")" "$(sed -n 's/^BuildID=//p' "$ini")"
+}
+
+check() {
+  # The zoom patch adds this pref. Without it the tarball is from the wrong
+  # tree and must not be installed.
+  unzip -p "$srcdir/thunderbird/omni.ja" defaults/pref/all-thunderbird.js |
+    grep -q 'mail\.message\.zoom_percent'
+}
+
+package() {
+  cd "$srcdir/thunderbird"
+
+  # Updates come through pacman. The policy disables the in-app updater;
+  # its files would only take space.
+  rm -f updater updater.ini update-settings.ini precomplete removed-files
+
+  install -d "$pkgdir/usr/lib"
+  cp -a . "$pkgdir/usr/lib/$_pkgname"
+
+  install -Dm644 "$srcdir/vendor-prefs.js" -t "$pkgdir/usr/lib/$_pkgname/defaults/pref"
+  install -Dm644 "$srcdir/distribution.ini" "$srcdir/policies.json" \
+    -t "$pkgdir/usr/lib/$_pkgname/distribution"
+  install -Dm644 "$srcdir/org.mozilla.Thunderbird.desktop" -t "$pkgdir/usr/share/applications"
+
+  for i in 16 22 24 32 48 64 128 256; do
+    install -Dm644 "chrome/icons/default/default$i.png" \
+      "$pkgdir/usr/share/icons/hicolor/${i}x${i}/apps/org.mozilla.Thunderbird.png"
+  done
+  install -Dm644 chrome/icons/default/TB-symbolic.svg \
+    "$pkgdir/usr/share/icons/hicolor/symbolic/apps/thunderbird-symbolic.svg"
+
+  # System-provided dictionaries and CA store
+  ln -Ts /usr/share/hunspell "$pkgdir/usr/lib/$_pkgname/dictionaries"
+  ln -Ts /usr/share/hyphen "$pkgdir/usr/lib/$_pkgname/hyphenation"
+  ln -sf /usr/lib/libnssckbi.so "$pkgdir/usr/lib/$_pkgname/libnssckbi.so"
+
+  # Wrapper as in extra/thunderbird. Unlike there, thunderbird-bin stays: in
+  # Mozilla's packaged builds it is the real binary and thunderbird is a
+  # launcher stub that execs it.
+  install -Dm755 /dev/stdin "$pkgdir/usr/bin/$_pkgname" <<END
+#!/bin/sh
+exec /usr/lib/$_pkgname/thunderbird "\$@"
+END
+}

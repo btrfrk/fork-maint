@@ -1,0 +1,36 @@
+# Host config: copy to $XDG_CONFIG_HOME/fork-maint/config.yaml (or point
+# FORK_MAINT_CONFIG at it). forks.<name> is merged over <name>/fork.yaml;
+# every null there must be set here.
+
+agent:
+  harness: none             # "claude" or "codex" to run one agent turn on a blocked fork
+  max_turns: 40             # claude only
+  timeout_minutes: 45
+  # model: ""               # codex only, passed as aisan --model
+
+forks:
+  digikam:
+    repo: ~/src/digikam
+    fork:
+      remote: myfork        # the remote arch/PKGBUILD's source= points at
+    deploy:
+      aur: ssh://aur@aur.archlinux.org/<package>.git    # optional
+
+  fluffychat:
+    repo: ~/src/fluffychat
+    fork:
+      remote: myfork        # optional
+    inputs:
+      matrix_sdk: ~/src/matrix-dart-sdk
+    deploy:
+      app_id: com.example.fluffychat
+      repo_dir: ~/fdroid
+      keystore: ~/keys/apk-signing.p12
+      key_alias: release
+      key_pass_file: ~/keys/apk-signing.pass
+      cert_sha256: <sha256 of the signing certificate, as apksigner prints it>
+
+  thunderbird:
+    repo: ~/src/firefox/comm
+    workspace:
+      root_repo: ~/src/firefox
