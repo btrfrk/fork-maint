@@ -43,7 +43,7 @@ systemctl --user enable --now fork-maint.timer
 
 ## Layout
 
-One directory per fork:
+One directory per fork under `forks/`:
 
 | File | Contents |
 |---|---|
@@ -65,7 +65,7 @@ python3 -m unittest discover tests
 `$XDG_CONFIG_HOME/fork-maint/config.yaml` or the file named by
 `FORK_MAINT_CONFIG`, holds what is specific to one: checkouts, remotes,
 keys, the deploy target. `forks.<name>` in it is merged over
-`<name>/fork.yaml`, mappings key by key. A `null` in `fork.yaml` marks a
+`forks/<name>/fork.yaml`, mappings key by key. A `null` in `fork.yaml` marks a
 value the host config must supply; a fork with one left unset is
 reported and skipped. `config.example.yaml` shows every such key.
 

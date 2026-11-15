@@ -1,5 +1,5 @@
 # Host config: copy to $XDG_CONFIG_HOME/fork-maint/config.yaml (or point
-# FORK_MAINT_CONFIG at it). forks.<name> is merged over <name>/fork.yaml;
+# FORK_MAINT_CONFIG at it). forks.<name> is merged over forks/<name>/fork.yaml;
 # every null there must be set here.
 
 agent:

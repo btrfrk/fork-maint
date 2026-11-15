@@ -7,7 +7,7 @@
 
 usage: fork-maint [--force] [--no-push] [--no-deploy] [--no-agent] [fork ...]
 
-Each fork is a directory in the forks repo with a fork.yaml (see README.md).
+Each fork is a directory under forks/ in this repo with a fork.yaml (see README.md).
 The host config ($XDG_CONFIG_HOME/fork-maint/config.yaml) is merged over it
 and supplies what is specific to this machine: checkouts, remotes, keys.
 Without arguments every fork that has a `box:` section is processed. Forks
@@ -43,7 +43,8 @@ from pathlib import Path
 
 import yaml
 
-FORKS = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent
+FORKS = REPO / "forks"
 HOME = Path.home()
 CONFIG = Path(
     os.environ.get("FORK_MAINT_CONFIG")
@@ -627,13 +628,13 @@ class Fork:
         """
         harness = cfg["harness"]
         record = LOG_DIR / f"{self.name}.json"
-        prompt = (FORKS / "agent/prompt.md").read_text()
+        prompt = (REPO / "agent/prompt.md").read_text()
         prompt = (prompt.replace("<forks>", str(FORKS)).replace("<fork>", self.name)
                   .replace("<config>", str(self.config_path())).replace("<record>", str(record)))
         prompt += f"\n\nFork: {self.name}\n"
         binds = self.state / "agent-binds.toml"
         # A JSON array of strings is a valid TOML array.
-        binds.write_text(f"ro = {json.dumps([str(FORKS), str(LOG_DIR)])}\n")
+        binds.write_text(f"ro = {json.dumps([str(REPO), str(LOG_DIR)])}\n")
         if harness == "claude":
             argv = ["aisan", "claude", str(self.repo), "--binds", str(binds), "--",
                     "-p", prompt, "--permission-mode", "bypassPermissions",
