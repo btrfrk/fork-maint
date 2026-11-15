@@ -9,6 +9,9 @@ agent:
   # model: ""               # codex only, passed as aisan --model
 
 forks:
+  azahar:
+    repo: ~/src/azahar
+
   digikam:
     repo: ~/src/digikam
     fork:

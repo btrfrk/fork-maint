@@ -10,6 +10,7 @@ The forks here:
 
 | Fork | Upstream | Patch | Ships as |
 |---|---|---|---|
+| `azahar` | Azahar master | touch button in touch-from-button maps | local Arch package |
 | `digikam` | digiKam master | quick filter toolbar, "Open With External Editor" | Arch package on the AUR |
 | `fluffychat` | FluffyChat main | personal chat names, a Matrix SDK fix, release build setup | APK in an F-Droid repo |
 | `thunderbird` | comm-central main | message zoom pref (bug 1689030) | local Arch package |

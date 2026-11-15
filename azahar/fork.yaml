@@ -1,0 +1,30 @@
+name: azahar
+repo: null                          # the Azahar checkout
+upstream:
+  remote: origin                    # https://github.com/azahar-emu/azahar
+  track:
+    branch: master
+fork:
+  branch: feat/button-layers        # no fork remote: nothing is pushed
+patches: git log --oneline origin/master..feat/button-layers
+  # input_common: Add a touch button to touch-from-button maps
+# No flake: makepkg builds with the system toolchain and the host's packages.
+box:                                # cwd: the azahar clone in the workspace
+  fetch:
+    # The build uses the bundled libraries, all of them submodules.
+    - git submodule sync --recursive --quiet && git submodule update --init --recursive --jobs 8
+  prepare:
+    # The box home persists, so makepkg's srcdir and with it the cmake build
+    # tree survive between runs: rebuilds are incremental.
+    - mkdir -p "$HOME/pkg/azahar" && cp "$FORK_DIR/arch/PKGBUILD" "$HOME/pkg/azahar/"
+  verify: []                        # the package build compiles the whole tree
+  build:
+    - rm -rf out && mkdir out && cd "$HOME/pkg/azahar" && AZAHAR_SRC="$OLDPWD" PKGDEST="$OLDPWD/out" makepkg -f
+  artifact: out/azahar-button-layers-*.pkg.tar.zst
+package:
+  name: azahar-button-layers        # provides and conflicts azahar
+deploy:
+  kind: arch                        # the report carries the pacman -U command
+  package: azahar-button-layers
+deployed_check: pacman -Q azahar-button-layers
+upstreaming: none                   # not decided
