@@ -10,7 +10,7 @@
 # FFmpeg support (video dumping) needs FFmpeg 7 exactly; extra has a newer
 # one, so it is off.
 
-pkgname=azahar-button-layers
+pkgname=azahar-btrfrk
 _pkgname=azahar
 pkgver=0
 pkgrel=1

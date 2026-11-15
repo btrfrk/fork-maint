@@ -20,11 +20,11 @@ box:                                # cwd: the azahar clone in the workspace
   verify: []                        # the package build compiles the whole tree
   build:
     - rm -rf out && mkdir out && cd "$HOME/pkg/azahar" && AZAHAR_SRC="$OLDPWD" PKGDEST="$OLDPWD/out" makepkg -f
-  artifact: out/azahar-button-layers-*.pkg.tar.zst
+  artifact: out/azahar-btrfrk-*.pkg.tar.zst
 package:
-  name: azahar-button-layers        # provides and conflicts azahar
+  name: azahar-btrfrk               # provides and conflicts azahar
 deploy:
   kind: arch                        # the report carries the pacman -U command
-  package: azahar-button-layers
-deployed_check: pacman -Q azahar-button-layers
+  package: azahar-btrfrk
+deployed_check: pacman -Q azahar-btrfrk
 upstreaming: none                   # not decided
