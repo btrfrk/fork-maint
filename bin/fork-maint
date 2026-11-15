@@ -508,14 +508,23 @@ class Fork:
             return
         log = self.log("deploy")
         clone = self.state / "aur"
+        url = self.cfg["deploy"]["aur"]
         if not (clone / ".git").exists():
-            run(["git", "clone", "--quiet", self.cfg["deploy"]["aur"], str(clone)], log=log)
-        run(["git", "fetch", "--quiet", "origin"], cwd=clone, log=log)
-        git(clone, "checkout", "--quiet", "--force", "-B", "master", "origin/master")
+            run(["git", "clone", "--quiet", url, str(clone)], log=log)
+        # deploy.aur changes when the package is renamed.
+        git(clone, "remote", "set-url", "origin", url)
+        run(["git", "fetch", "--quiet", "--prune", "origin"], cwd=clone, log=log)
+        if git(clone, "rev-parse", "-q", "--verify", "origin/master", check=False).returncode == 0:
+            git(clone, "checkout", "--quiet", "--force", "-B", "master", "origin/master")
+        else:
+            # A new package: the AUR serves an empty repository until the
+            # first push.
+            git(clone, "symbolic-ref", "HEAD", "refs/heads/master")
+            git(clone, "update-ref", "-d", "refs/heads/master")
         git(clone, "clean", "-fdxq")
 
         # .SRCINFO is generated, so it has no counterpart in arch/.
-        git(clone, "rm", "-rq", ".", ":(exclude).SRCINFO")
+        git(clone, "rm", "-rqf", "--ignore-unmatch", ".", ":(exclude).SRCINFO")
         arch = self.dir / "arch"
         for path in git_out(arch, "ls-files").splitlines():
             (clone / path).parent.mkdir(parents=True, exist_ok=True)

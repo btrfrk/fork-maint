@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+import unittest.mock
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / "bin/fork-maint"
@@ -81,7 +82,7 @@ class LoadForkTest(unittest.TestCase):
 
 class ArtifactTest(unittest.TestCase):
     def test_glob_keeps_the_name(self):
-        path = Path("out/digikam-quickfilter-git-9.2.0-1-x86_64.pkg.tar.zst")
+        path = Path("out/digikam-btrfrk-9.2.0-1-x86_64.pkg.tar.zst")
         self.assertEqual(fm.artifact_name("out/digikam-*.pkg.tar.zst", path, "digikam", "26111505"),
                          path.name)
 
@@ -135,3 +136,61 @@ class NewBaseTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AurTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = root = Path(tmp.name)
+        for name in ("STATE_ROOT", "LOG_DIR", "FORKS"):
+            self.addCleanup(setattr, fm, name, getattr(fm, name))
+        fm.STATE_ROOT, fm.LOG_DIR, fm.FORKS = root / "state", root / "logs", root / "forks"
+        arch = fm.FORKS / "demo/arch"
+        arch.mkdir(parents=True)
+        (arch / "PKGBUILD").write_text(textwrap.dedent("""\
+            pkgname=demo
+            pkgver=0
+            pkgrel=1
+            arch=(any)
+            package() { :; }
+            """))
+        subprocess.run(["git", "init", "-q", str(fm.FORKS)], check=True)
+        subprocess.run(["git", "-C", str(fm.FORKS), "add", "."], check=True)
+        (root / ".PKGINFO").write_text("pkgname = demo\npkgver = 1.0-1\n")
+        self.artifact = root / "demo-1.0-1-any.pkg.tar"
+        subprocess.run(["bsdtar", "-cf", str(self.artifact), "-C", str(root), ".PKGINFO"],
+                       check=True)
+
+    def bare(self, name):
+        path = self.root / f"{name}.git"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "master", str(path)], check=True)
+        return str(path)
+
+    def deploy(self, url):
+        fork = fm.Fork("demo", {"repo": str(self.root), "fork": {"branch": "main"},
+                                "deploy": {"aur": url}},
+                       argparse.Namespace(no_deploy=False, no_push=False))
+        fork.artifact = self.artifact
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        with unittest.mock.patch.dict("os.environ", env):
+            fork.deploy_aur()
+
+    def files(self, url):
+        return subprocess.run(["git", "-C", url, "ls-tree", "--name-only", "master"],
+                              capture_output=True, text=True, check=True).stdout.split()
+
+    def test_new_package(self):
+        url = self.bare("new")
+        self.deploy(url)
+        self.assertEqual(self.files(url), [".SRCINFO", "PKGBUILD"])
+
+    def test_renamed_package_goes_to_the_new_url(self):
+        old, new = self.bare("old"), self.bare("new")
+        self.deploy(old)
+        self.deploy(new)
+        self.assertEqual(self.files(new), [".SRCINFO", "PKGBUILD"])
+        log = subprocess.run(["git", "-C", new, "log", "--oneline", "master"],
+                             capture_output=True, text=True, check=True).stdout
+        self.assertEqual(len(log.splitlines()), 1)
