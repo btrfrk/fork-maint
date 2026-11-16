@@ -27,17 +27,17 @@ The forks here:
 ## Setup
 
 ```sh
-git clone <this repo> ~/src/forks
+git clone <this repo> ~/src/fork-maint
 mkdir -p ~/.config/fork-maint
-cp ~/src/forks/config.example.yaml ~/.config/fork-maint/config.yaml
+cp ~/src/fork-maint/config.example.yaml ~/.config/fork-maint/config.yaml
 $EDITOR ~/.config/fork-maint/config.yaml
-ln -s ~/src/forks/bin/fork-maint ~/.local/bin/
+ln -s ~/src/fork-maint/bin/fork-maint ~/.local/bin/
 ```
 
-To run it daily:
+To run it weekly, on Sundays:
 
 ```sh
-systemctl --user link ~/src/forks/systemd/fork-maint.service ~/src/forks/systemd/fork-maint.timer
+systemctl --user link ~/src/fork-maint/systemd/fork-maint.service ~/src/fork-maint/systemd/fork-maint.timer
 systemctl --user enable --now fork-maint.timer
 ```
 
@@ -140,7 +140,7 @@ To build by hand, use the devShell with the host environment cleared,
 from the fork's source tree:
 
 ```sh
-nix develop ~/src/forks/<fork> -i --keep HOME -c <command>
+nix develop ~/src/fork-maint/<fork> -i --keep HOME -c <command>
 ```
 
 Plain `nix develop` prepends to the host `PATH`, so a missing tool would

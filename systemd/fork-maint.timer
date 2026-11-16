@@ -1,8 +1,8 @@
 [Unit]
-Description=Daily fork maintenance
+Description=Weekly fork maintenance
 
 [Timer]
-OnCalendar=*-*-* 05:00
+OnCalendar=Sun *-*-* 05:00
 Persistent=true
 RandomizedDelaySec=30m
 
