@@ -27,14 +27,17 @@ conflicts=("$_pkgname")
 options=(!lto)
 source=()
 
-_pkgsrc=${AZAHAR_SRC:?set AZAHAR_SRC to the azahar checkout}
+# Checked where it is used, so that makepkg --printsrcinfo works without it.
+_pkgsrc=$AZAHAR_SRC
 
 pkgver() {
+  : "${_pkgsrc:?set AZAHAR_SRC to the azahar checkout}"
   git -C "$_pkgsrc" describe --long --tags --abbrev=7 \
     | sed 's/^v//; s/[^-]*-g/r&/; s/-/./g'
 }
 
 build() {
+  : "${_pkgsrc:?set AZAHAR_SRC to the azahar checkout}"
   cmake -S "$_pkgsrc" -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr \

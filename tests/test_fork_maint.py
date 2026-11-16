@@ -134,6 +134,83 @@ class NewBaseTest(unittest.TestCase):
             self.fork({}).new_base()
 
 
+class SrcinfoTest(unittest.TestCase):
+    SRCINFO = textwrap.dedent("""\
+        pkgbase = demo
+        \tpkgver = 1
+        \tmakedepends = cmake
+        \tmakedepends = qt6-tools>=6.5
+        \tcheckdepends = python
+        \tdepends = qt6-base
+        \tdepends = cmake
+        \tdepends_x86_64 = lib32-demo
+        \tdepends_aarch64 = arm-demo
+        \toptdepends = ffmpeg: video
+
+        pkgname = demo
+        """)
+
+    def test_names_without_constraints_or_duplicates(self):
+        self.assertEqual(fm.srcinfo_deps(self.SRCINFO, "x86_64"),
+                         ["cmake", "qt6-tools", "python", "qt6-base", "lib32-demo"])
+
+    def test_other_machines_entries_are_skipped(self):
+        self.assertIn("arm-demo", fm.srcinfo_deps(self.SRCINFO, "aarch64"))
+        self.assertNotIn("lib32-demo", fm.srcinfo_deps(self.SRCINFO, "aarch64"))
+
+
+class RootfsTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        for name in ("STATE_ROOT", "LOG_DIR", "FORKS"):
+            self.addCleanup(setattr, fm, name, getattr(fm, name))
+        fm.STATE_ROOT, fm.LOG_DIR, fm.FORKS = root / "state", root / "logs", root / "forks"
+        (fm.FORKS / "demo").mkdir(parents=True)
+
+    def fork(self, **cfg):
+        fork = fm.Fork("demo", {"repo": "/nonexistent", "fork": {"branch": "main"}, **cfg},
+                       argparse.Namespace())
+        (fork.state / "env.sh").write_text("")
+        fork.shell = "/usr/bin/bash"
+        return fork
+
+    def binds(self, fork):
+        with unittest.mock.patch.object(fm, "run") as run:
+            fork.box("true", fork.log("test"))
+        argv = run.call_args.args[0]
+        return {argv[i + 2]: argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"}
+
+    def test_box_binds_the_host_system_without_rootfs(self):
+        binds = self.binds(self.fork())
+        self.assertEqual(binds["/usr"], "/usr")
+        self.assertEqual(binds["/etc"], "/etc")
+
+    def test_box_binds_the_root_with_rootfs(self):
+        fork = self.fork(rootfs="arch")
+        (fork.root / "var/lib/pacman").mkdir(parents=True)
+        binds = self.binds(fork)
+        self.assertEqual(binds["/usr"], str(fork.root / "usr"))
+        self.assertEqual(binds["/etc"], str(fork.root / "etc"))
+        self.assertEqual(binds["/var/lib/pacman"], str(fork.root / "var/lib/pacman"))
+        self.assertEqual(binds["/etc/passwd"], "/etc/passwd")
+        self.assertEqual(binds["/etc/makepkg.conf"], "/etc/makepkg.conf")
+
+    def test_rootfs_outside_the_fork_is_rejected(self):
+        (fm.FORKS / "demo/fork.yaml").write_text("rootfs: ../other\n")
+        with self.assertRaisesRegex(fm.ForkError, "not inside the fork's directory"):
+            fm.load_fork("demo", {})
+
+    def test_root_too_deep_for_the_agent_socket(self):
+        fm.STATE_ROOT = fm.STATE_ROOT / ("d" * 60)
+        fork = self.fork(rootfs="arch")
+        with unittest.mock.patch.object(fm, "run") as run:
+            with self.assertRaisesRegex(fm.ForkError, "too deep for gpg-agent"):
+                fork.prepare_root()
+        run.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -10,7 +10,7 @@ fork:
 patches: git log --oneline origin/master..working
   # input_common: Add a touch button to touch-from-button maps
   # input_common: Add a stick-driven touch cursor to touch-from-button maps
-# No flake: makepkg builds with the system toolchain and the host's packages.
+rootfs: arch                        # Arch root with the PKGBUILD's dependencies; no flake
 box:                                # cwd: the azahar clone in the workspace
   fetch:
     # The build uses the bundled libraries, all of them submodules.

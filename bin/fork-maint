@@ -17,10 +17,12 @@ $XDG_STATE_HOME/fork-maintenance/<date>/.
 
 Per fork: fetch upstream and inputs, stop if nothing moved past the
 fork-deployed tag, back the branch up, rebase it, generate the devShell
-environment on the host, run the prepare, verify and build steps inside a
-bwrap box, push the fork remote, then sign and deploy on the host.
+environment on the host, create or update the fork's Arch root, run the
+prepare, verify and build steps inside a bwrap box, push the fork remote,
+then sign and deploy on the host.
 
-The box sees the system read-only, /nix/store read-only, a persistent box
+The box sees the system read-only (the fork's Arch root in place of the
+host's /usr and /etc, with `rootfs`), /nix/store read-only, a persistent box
 home mounted over the real home, the workspace clone read-write, the fork's
 directory in this repo read-only at /work/fork, and the declared inputs
 read-only. It has no credentials: signing keys and the F-Droid repo are
@@ -115,6 +117,11 @@ def load_fork(name, host):
     cfg = expand(cfg)
     if cfg.get("flake"):
         cfg["flake"] = os.path.normpath(fork_dir / cfg["flake"])
+    if cfg.get("rootfs"):
+        rootfs = os.path.normpath(cfg["rootfs"])
+        if os.path.isabs(rootfs) or rootfs.startswith(".."):
+            raise ForkError(f"rootfs: {cfg['rootfs']} is not inside the fork's directory")
+        cfg["rootfs"] = rootfs
     return cfg
 
 
@@ -178,6 +185,24 @@ def pkginfo_version(pkginfo):
     return version, pkgver, pkgrel
 
 
+def srcinfo_deps(srcinfo, machine):
+    """Package names in a .SRCINFO's depends, makedepends and checkdepends.
+
+    Arch-specific entries count for `machine` only; version constraints are
+    dropped, since pacman -S takes names.
+    """
+    keys = {f"{kind}depends{suffix}" for kind in ("", "make", "check")
+            for suffix in ("", f"_{machine}")}
+    names = []
+    for line in srcinfo.splitlines():
+        key, sep, value = line.strip().partition(" = ")
+        if sep and key in keys:
+            name = re.split(r"[<>=]", value, maxsplit=1)[0]
+            if name not in names:
+                names.append(name)
+    return names
+
+
 def nix_system():
     return run(["nix", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"]).stdout.strip()
 
@@ -194,6 +219,7 @@ class Fork:
         self.box_home = self.state / "home"
         self.ws = self.state / "src"
         self.out = self.state / "out"
+        self.root = self.state / "root" if self.cfg.get("rootfs") else None
         self.lines = []  # report detail lines
         self.attention = []
         self.status = "blocked"
@@ -341,19 +367,63 @@ class Fork:
         git(target, "checkout", "--quiet", "--force", "-B", self.branch, "FETCH_HEAD")
         git(target, "reset", "--quiet", "--hard")
 
+    def prepare_root(self):
+        """Create or update the fork's Arch root with its PKGBUILD's dependencies.
+
+        pacstrap and arch-chroot run unprivileged (-N), in a user namespace
+        mapped to the user's subordinate ids; the box binds the result
+        read-only. Dependencies the PKGBUILD drops stay installed.
+        """
+        if not self.root:
+            return
+        log = self.log("rootfs")
+        # gpg-agent puts its sockets in the keyring directory. Past the
+        # sun_path limit it does not start, and pacstrap -K still succeeds,
+        # leaving the keys untrusted and every later update failing.
+        socket = self.root / "etc/pacman.d/gnupg/S.gpg-agent.browser"
+        if len(str(socket).encode()) > 107:
+            raise ForkError(f"rootfs: {self.root} is too deep for gpg-agent's socket")
+        if not (self.root / "var/lib/pacman/local").exists():
+            self.root.mkdir(parents=True, exist_ok=True)
+            run(["pacstrap", "-N", "-K", str(self.root), "base-devel"], log=log)
+        # makepkg wants a writable directory even to print .SRCINFO.
+        srcinfo = self.box_home / ".SRCINFO"
+        proc = self.box(
+            f'rm -rf /tmp/pkg && cp -r /work/fork/{self.cfg["rootfs"]} /tmp/pkg && cd /tmp/pkg'
+            f' && makepkg --printsrcinfo > "$HOME/.SRCINFO"',
+            log,
+        )
+        if proc.returncode != 0:
+            raise ForkError(f"rootfs: makepkg --printsrcinfo failed, see {log.name}")
+        deps = srcinfo_deps(srcinfo.read_text(), os.uname().machine)
+        run(["arch-chroot", "-N", str(self.root), "pacman", "-Syu", "--needed", "--noconfirm",
+             "base-devel", *deps], log=log)
+        # The cache is owned by the mapped root, which is the user.
+        for path in (self.root / "var/cache/pacman/pkg").iterdir():
+            path.unlink()
+        self.note(f"rootfs: {len(deps)} dependencies")
+
     def box(self, command, log, extra_env=None, network=False):
         """Run one shell command inside the box, in the workspace."""
         inputs = self.cfg.get("inputs") or {}
+        system = self.root or Path("/")
+        # The Arch root brings its own /etc. The user, name resolution and the
+        # makepkg settings (MAKEFLAGS, debug packages) still come from the host.
+        host_etc = (["passwd", "group", "resolv.conf", "hosts", "makepkg.conf", "makepkg.conf.d"]
+                    if self.root else [])
         argv = [
             "bwrap", "--unshare-all", *(["--share-net"] if network else []),
             "--die-with-parent", "--new-session",
-            "--ro-bind", "/usr", "/usr",
+            "--ro-bind", str(system / "usr"), "/usr",
             "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
             "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin",
-            "--ro-bind", "/etc", "/etc",
+            "--ro-bind", str(system / "etc"), "/etc",
+            *[arg for name in host_etc if Path("/etc", name).exists()
+              for arg in ("--ro-bind", f"/etc/{name}", f"/etc/{name}")],
             "--ro-bind", "/nix/store", "/nix/store",
             # makepkg reads the package database to check dependencies.
-            *(["--ro-bind", "/var/lib/pacman", "/var/lib/pacman"] if Path("/var/lib/pacman").exists() else []),
+            *(["--ro-bind", str(system / "var/lib/pacman"), "/var/lib/pacman"]
+              if (system / "var/lib/pacman").exists() else []),
             "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
             # The box home sits over the real home: the JDK takes user.home
             # from the passwd entry, not from HOME.
@@ -610,6 +680,7 @@ class Fork:
                 return
             self.environment()
             self.workspace()
+            self.prepare_root()
             self.box_steps()
             self.publish()
             self.deploy()

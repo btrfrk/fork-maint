@@ -19,8 +19,8 @@ The forks here:
 
 - Linux, Python 3.11+ with PyYAML, git, bubblewrap (`bwrap`).
 - Nix with flakes, for forks with a `flake`.
-- Arch forks: `makepkg`, `bsdtar`, and the PKGBUILD's dependencies
-  installed on the host.
+- Arch forks: `makepkg` and `bsdtar`; with `rootfs`, `arch-install-scripts`
+  and subordinate ids for the user (`/etc/subuid`, `/etc/subgid`).
 - F-Droid forks: `fdroidserver` and an initialized F-Droid repo.
 - Agent turns (optional): `aisan` and the `claude` or `codex` CLI.
 
@@ -78,6 +78,7 @@ Keys `fork-maint` reads:
 | `rebase.upstream_wins` | files where upstream's side is taken at a conflict (lock files) |
 | `inputs` | directories bound read-only at `/inputs/<name>`, exported as `INPUT_<name>` |
 | `flake` | the devShell, a path relative to the fork's directory; the host realizes it and passes `nix print-dev-env` into the box |
+| `rootfs` | the directory of a PKGBUILD, relative to the fork's directory; the box runs on an Arch root with its dependencies, below |
 | `workspace.root_repo`, `root_track`, `subdir` | when the fork repo sits inside another tree (comm inside mozilla): the workspace is a clone of that tree at the host repo's `root_track`, with the fork repo cloned into `subdir` |
 | `box.fetch` | shell commands with network: fill caches from lock files and pinned versions |
 | `box.prepare`, `box.verify`, `box.build` | shell commands without network, in order in the workspace; `BUILD_NUMBER` is the UTC `yymmddHH`, `BOX_KEYSTORE` a throwaway key, `FORK_DIR` the fork's directory here |
@@ -130,11 +131,22 @@ Gradle, resolves every configuration through an init script.
 so a build that needs something fetch did not provide fails instead of
 downloading.
 
-Without `flake`, the box runs the system toolchain (makepkg). The box
-sees `/var/lib/pacman` read-only for makepkg's dependency check; the
-packages themselves, `makedepends` included, must be installed on the
-host. fakeroot works in the box because `FAKEROOTDONTTRYCHOWN` is set:
-with one uid mapped, a real chown fails with EINVAL, not EPERM.
+With `rootfs`, the box's `/usr`, `/etc` and `/var/lib/pacman` come from
+an Arch root under `$XDG_STATE_HOME/fork-maint/<fork>/root` instead of the
+host; `passwd`, `group`, `resolv.conf`, `hosts`, `makepkg.conf` and
+`makepkg.conf.d` still come from the host's `/etc`. Before the box phases, `pacstrap -N` creates the root with
+`base-devel`, and `arch-chroot -N` runs `pacman -Syu --needed` in it with
+the `depends`, `makedepends` and `checkdepends` of the PKGBUILD's
+`.SRCINFO`, so the host needs none of them. Both run unprivileged in a user
+namespace; files in the root may belong to the user's subordinate ids, so
+remove it with `unshare --map-auto --map-root-user rm -rf <root>`.
+Dependencies the PKGBUILD drops stay installed until the root is removed.
+
+Without `rootfs`, the box sees the host's system, and for makepkg its
+`/var/lib/pacman`, so a PKGBUILD's dependencies must be installed on the
+host. Either way, fakeroot works in the box because
+`FAKEROOTDONTTRYCHOWN` is set: with one uid mapped, a real chown fails
+with EINVAL, not EPERM.
 
 To build by hand, use the devShell with the host environment cleared,
 from the fork's source tree:

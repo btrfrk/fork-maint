@@ -12,7 +12,7 @@ patches: git log --oneline origin/master..quickfilter
   # Add the quick filter toolbar, availability counts and camera filter
   # Create the quick filter toolbar after createGUI
   # Add "Open With External Editor" action and setting
-# No flake: makepkg builds with the system toolchain and the host's packages.
+rootfs: arch                        # Arch root with the PKGBUILD's dependencies; no flake
 box:
   fetch: []                         # nothing to download: sources come from the workspace
   prepare:

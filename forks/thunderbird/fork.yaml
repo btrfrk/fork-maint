@@ -14,6 +14,7 @@ workspace:
   subdir: comm
 flake: .                            # sets MOZCONFIG (artifact build), MOZ_OBJDIR and
                                     # MOZBUILD_STATE_PATH under $XDG_STATE_HOME/thunderbird-build
+rootfs: arch                        # Arch root for makepkg and the package's dependencies
 box:                                # cwd: the mozilla tree in the workspace
   fetch:
     # The artifact build is a download: prebuilt libxul and friends for the
