@@ -5,9 +5,11 @@ upstream:
   track:
     branch: master
 fork:
-  branch: feat/button-layers        # no fork remote: nothing is pushed
-patches: git log --oneline origin/master..feat/button-layers
+  branch: working
+  # remote (host config): pushed after a successful build
+patches: git log --oneline origin/master..working
   # input_common: Add a touch button to touch-from-button maps
+  # input_common: Add a stick-driven touch cursor to touch-from-button maps
 # No flake: makepkg builds with the system toolchain and the host's packages.
 box:                                # cwd: the azahar clone in the workspace
   fetch:

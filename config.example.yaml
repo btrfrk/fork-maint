@@ -11,6 +11,8 @@ agent:
 forks:
   azahar:
     repo: ~/src/azahar
+    fork:
+      remote: myfork        # optional
 
   digikam:
     repo: ~/src/digikam
