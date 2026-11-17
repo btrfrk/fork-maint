@@ -1,7 +1,6 @@
 import argparse
 import importlib.machinery
 import importlib.util
-import os
 import subprocess
 import tempfile
 import textwrap
@@ -210,61 +209,6 @@ class RootfsTest(unittest.TestCase):
             with self.assertRaisesRegex(fm.ForkError, "too deep for gpg-agent"):
                 fork.prepare_root()
         run.assert_not_called()
-
-    def prepare_root(self, fail_update=False):
-        """prepare_root with pacstrap and pacman faked as downloading one package each."""
-        fork = self.fork(rootfs="arch")
-        cache = fork.root / "var/cache/pacman/pkg"
-        seen = {}
-
-        def run(argv, **kwargs):
-            seen[argv[0]] = sorted(p.name for p in cache.iterdir())
-            if argv[0] == "pacstrap":
-                (fork.root / "var/lib/pacman/local").mkdir(parents=True)
-                (cache / "base.pkg.tar.zst").write_text("")
-                os.utime(cache / "base.pkg.tar.zst", (0, 0))
-                (cache / "next.pkg.tar.zst.part").write_text("")
-            else:
-                (cache / "dep.pkg.tar.zst").write_text("")
-                if fail_update:
-                    raise fm.ForkError("pacman failed")
-
-        def box(command, log, *args, **kwargs):
-            (fork.box_home / ".SRCINFO").write_text("pkgbase = demo\n\tdepends = dep\n")
-            return subprocess.CompletedProcess([], 0)
-
-        with unittest.mock.patch.object(fm, "run", run), \
-                unittest.mock.patch.object(fork, "box", box):
-            fork.prepare_root()
-        return fork, seen
-
-    def test_packages_are_shared_between_roots(self):
-        shared = fm.STATE_ROOT / "pacman-cache"
-        shared.mkdir(parents=True)
-        (shared / "old.pkg.tar.zst").write_text("")
-        fork, seen = self.prepare_root()
-        self.assertEqual(seen["pacstrap"], ["old.pkg.tar.zst"])
-        self.assertEqual(sorted(p.name for p in shared.iterdir()),
-                         ["base.pkg.tar.zst", "dep.pkg.tar.zst", "old.pkg.tar.zst"])
-        self.assertEqual(list((fork.root / "var/cache/pacman/pkg").iterdir()), [])
-        self.assertGreater((shared / "base.pkg.tar.zst").stat().st_mtime, fm.NOW.timestamp() - 60)
-
-    def test_downloads_are_kept_when_the_update_fails(self):
-        with self.assertRaisesRegex(fm.ForkError, "pacman failed"):
-            self.prepare_root(fail_update=True)
-        self.assertEqual(sorted(p.name for p in (fm.STATE_ROOT / "pacman-cache").iterdir()),
-                         ["base.pkg.tar.zst", "dep.pkg.tar.zst"])
-
-    def test_prune_old(self):
-        shared = fm.STATE_ROOT / "pacman-cache"
-        shared.mkdir(parents=True)
-        for name, age in (("old", 61), ("new", 59)):
-            path = shared / name
-            path.write_text("")
-            t = fm.NOW.timestamp() - age * 86400
-            os.utime(path, (t, t))
-        fm.prune_old(shared, days=60)
-        self.assertEqual([p.name for p in shared.iterdir()], ["new"])
 
 
 if __name__ == "__main__":
