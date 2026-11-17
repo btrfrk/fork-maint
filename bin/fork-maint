@@ -203,6 +203,24 @@ def srcinfo_deps(srcinfo, machine):
     return names
 
 
+def link_files(src, dst):
+    """Hardlink the files in `src` that `dst` lacks into `dst`; return the new links."""
+    dst.mkdir(parents=True, exist_ok=True)
+    added = []
+    for path in src.iterdir():
+        if path.is_file() and path.suffix != ".part" and not (dst / path.name).exists():
+            os.link(path, dst / path.name)
+            added.append(dst / path.name)
+    return added
+
+
+def prune_old(directory, days):
+    cutoff = NOW.timestamp() - days * 86400
+    for path in directory.iterdir():
+        if path.is_file() and path.stat().st_mtime < cutoff:
+            path.unlink()
+
+
 def nix_system():
     return run(["nix", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"]).stdout.strip()
 
@@ -383,24 +401,36 @@ class Fork:
         socket = self.root / "etc/pacman.d/gnupg/S.gpg-agent.browser"
         if len(str(socket).encode()) > 107:
             raise ForkError(f"rootfs: {self.root} is too deep for gpg-agent's socket")
-        if not (self.root / "var/lib/pacman/local").exists():
-            self.root.mkdir(parents=True, exist_ok=True)
-            run(["pacstrap", "-N", "-K", str(self.root), "base-devel"], log=log)
-        # makepkg wants a writable directory even to print .SRCINFO.
-        srcinfo = self.box_home / ".SRCINFO"
-        proc = self.box(
-            f'rm -rf /tmp/pkg && cp -r /work/fork/{self.cfg["rootfs"]} /tmp/pkg && cd /tmp/pkg'
-            f' && makepkg --printsrcinfo > "$HOME/.SRCINFO"',
-            log,
-        )
-        if proc.returncode != 0:
-            raise ForkError(f"rootfs: makepkg --printsrcinfo failed, see {log.name}")
-        deps = srcinfo_deps(srcinfo.read_text(), os.uname().machine)
-        run(["arch-chroot", "-N", str(self.root), "pacman", "-Syu", "--needed", "--noconfirm",
-             "base-devel", *deps], log=log)
+        # pacstrap and arch-chroot's pacman use only the root's own cache;
+        # hardlinks share the packages between roots and runs.
+        shared = STATE_ROOT / "pacman-cache"
+        shared.mkdir(parents=True, exist_ok=True)
+        cache = self.root / "var/cache/pacman/pkg"
+        link_files(shared, cache)
+        try:
+            if not (self.root / "var/lib/pacman/local").exists():
+                run(["pacstrap", "-N", "-K", str(self.root), "base-devel"], log=log)
+            # makepkg wants a writable directory even to print .SRCINFO.
+            srcinfo = self.box_home / ".SRCINFO"
+            proc = self.box(
+                f'rm -rf /tmp/pkg && cp -r /work/fork/{self.cfg["rootfs"]} /tmp/pkg && cd /tmp/pkg'
+                f' && makepkg --printsrcinfo > "$HOME/.SRCINFO"',
+                log,
+            )
+            if proc.returncode != 0:
+                raise ForkError(f"rootfs: makepkg --printsrcinfo failed, see {log.name}")
+            deps = srcinfo_deps(srcinfo.read_text(), os.uname().machine)
+            run(["arch-chroot", "-N", str(self.root), "pacman", "-Syu", "--needed", "--noconfirm",
+                 "base-devel", *deps], log=log)
+        finally:
+            # pacman keeps the server's mtime; prune_old needs the time the
+            # package entered the shared cache.
+            for path in link_files(cache, shared):
+                os.utime(path)
         # The cache is owned by the mapped root, which is the user.
-        for path in (self.root / "var/cache/pacman/pkg").iterdir():
+        for path in cache.iterdir():
             path.unlink()
+        prune_old(shared, days=60)
         self.note(f"rootfs: {len(deps)} dependencies")
 
     def box(self, command, log, extra_env=None, network=False):

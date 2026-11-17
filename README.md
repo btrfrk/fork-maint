@@ -141,6 +141,9 @@ the `depends`, `makedepends` and `checkdepends` of the PKGBUILD's
 namespace; files in the root may belong to the user's subordinate ids, so
 remove it with `unshare --map-auto --map-root-user rm -rf <root>`.
 Dependencies the PKGBUILD drops stay installed until the root is removed.
+The roots share downloaded packages through hardlinks in
+`$XDG_STATE_HOME/fork-maint/pacman-cache`; packages that entered it more
+than 60 days ago are removed.
 
 Without `rootfs`, the box sees the host's system, and for makepkg its
 `/var/lib/pacman`, so a PKGBUILD's dependencies must be installed on the
