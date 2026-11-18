@@ -18,6 +18,14 @@
   (bug 522887) but still refuses 5.x. Once upstream drops the cap the grep
   fails; then drop the sed. It was a patch until 2026-10-31, when a
   comment change next to the line broke it.
+- OpenCV 5.1 has no `cv::dnn::readNetFromTensorflow`, which the aesthetic
+  detector (`core/libs/imgqsort/detectors/aesthetic_detector.cpp`) and
+  `core/tests/imgqsort/NIMA_inference_cli.cpp` call. The fork guards
+  those calls with `CV_VERSION_MAJOR < 5`: on OpenCV 5 the model does not
+  load and aesthetic scoring is off; the detector must fail the way it
+  does when the model file is missing, not crash. Keep this as its own
+  commit on top of the stack, apart from the quick filter patches, and
+  drop it once upstream loads the model another way.
 - `fork-maint` publishes `arch/` to the AUR (`deploy.aur`) after a build,
   when the PKGBUILD or a patch changed; `git add` new files, untracked
   ones are not copied. A change goes out with the next run that builds:
