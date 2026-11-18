@@ -500,9 +500,18 @@ class Fork:
             self.failed_step = "build"
             raise ForkError(f"expected one artifact matching {pattern}, found {len(matches)}")
         artifact = Path(matches[0])
-        self.artifact = self.out / artifact_name(pattern, artifact, self.name, build_number)
-        shutil.copy2(artifact, self.artifact)
+        self.store_artifact(artifact, artifact_name(pattern, artifact, self.name, build_number))
         git(self.repo, "tag", "-f", "fork-built", self.branch)
+
+    def store_artifact(self, artifact, name):
+        """Copy the build output to out/, replacing earlier builds.
+
+        Deployed builds live in their repos; out/ keeps only the latest.
+        """
+        for old in self.out.iterdir():
+            old.unlink()
+        self.artifact = self.out / name
+        shutil.copy2(artifact, self.artifact)
 
     # -- host side ----------------------------------------------------------
 

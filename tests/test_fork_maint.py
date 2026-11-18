@@ -115,6 +115,25 @@ class ArtifactTest(unittest.TestCase):
         self.assertEqual(fm.pkginfo_version("pkgver = 1.0-1\n"), ("1.0-1", "1.0", "1"))
 
 
+class StoreArtifactTest(unittest.TestCase):
+    def test_out_keeps_only_the_latest_build(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        for name in ("STATE_ROOT", "LOG_DIR"):
+            self.addCleanup(setattr, fm, name, getattr(fm, name))
+        fm.STATE_ROOT, fm.LOG_DIR = root / "state", root / "logs"
+        fork = fm.Fork("demo", {"repo": str(root), "fork": {"branch": "main"}},
+                       argparse.Namespace())
+        for old in ("demo-1.apk", "demo-1-signed.apk"):
+            (fork.out / old).write_text("old")
+        build = root / "app-release.apk"
+        build.write_text("new")
+        fork.store_artifact(build, "demo-2.apk")
+        self.assertEqual([p.name for p in fork.out.iterdir()], ["demo-2.apk"])
+        self.assertEqual(fork.artifact.read_text(), "new")
+
+
 class NewBaseTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

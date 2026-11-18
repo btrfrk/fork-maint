@@ -132,7 +132,9 @@ The box is bwrap with its own namespaces: `/usr`, `/etc` and
 workspace clone read-write, declared inputs read-only under `/inputs/`,
 the fork's directory of this repo read-only at `/work/fork`. No keys and
 no deploy target inside; those are host-side steps that run only after
-the box succeeded.
+the box succeeded. The artifact is copied to
+`$XDG_STATE_HOME/fork-maint/<fork>/out`, which keeps only the latest
+build.
 
 Network: only the `fetch` phase has a route. It fills the caches in the
 box home and the workspace from lock files and pinned versions and, for
