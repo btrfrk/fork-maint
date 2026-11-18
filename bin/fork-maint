@@ -283,7 +283,8 @@ class Fork:
         built = self.tag_rev("fork-built")
         deployed = self.tag_rev("fork-deployed")
         self.old_base, self.new_base_rev, self.base_ref = cur_base, new_base, ref
-        auto_deploy = self.cfg.get("deploy", {}).get("kind") == "fdroid"
+        d = self.cfg.get("deploy", {})
+        auto_deploy = d.get("kind") == "fdroid" or (d.get("kind") == "arch" and d.get("repo_dir"))
         if (new_base == cur_base and built == tip and (not auto_deploy or deployed == tip)
                 and not self.args.force):
             self.status = "up to date"
@@ -637,10 +638,51 @@ class Fork:
         run(["git", "push", "origin", "master"], cwd=clone, log=log)
         self.note(f"published to the AUR: {version}")
 
+    def deploy_repo(self):
+        """Sign the package and add it to the pacman repo in deploy.repo_dir.
+
+        Clients only upgrade to a higher version, and a rebuilt package under
+        an existing name fails their cached checksum, so the version must
+        rise.
+        """
+        d = self.cfg["deploy"]
+        repo_dir, key = Path(d["repo_dir"]), d["repo_key"]
+        db = repo_dir / f"{d['repo_name']}.db.tar.zst"
+        info = run(["bsdtar", "-xOqf", str(self.artifact), ".PKGINFO"]).stdout
+        name = dict(line.split(" = ", 1) for line in info.splitlines() if " = " in line)["pkgname"]
+        version = pkginfo_version(info)[0]
+        if db.exists():
+            # Entries are <pkgname>-<pkgver>-<pkgrel>/; pkgver and pkgrel have no dashes.
+            entry = re.compile(rf"^{re.escape(name)}-([^-/]+-[^-/]+)/$")
+            for line in run(["bsdtar", "-tf", str(db)]).stdout.splitlines():
+                m = entry.match(line)
+                if m and int(run(["vercmp", version, m.group(1)]).stdout) <= 0:
+                    raise ForkError(f"{name} {version} is not above the repo's {m.group(1)}; not deployed")
+        if self.args.no_deploy:
+            self.status = "built, not deployed"
+            self.attention.append(f"{self.name}: --no-deploy; package at {self.artifact}")
+            return
+
+        log = self.log("deploy")
+        target = repo_dir / self.artifact.name
+        shutil.copy2(self.artifact, target)
+        target.chmod(0o644)
+        run(["gpg", "--batch", "--yes", "--local-user", key, "--detach-sign", "--no-armor",
+             str(target)], log=log)
+        # -R deletes the replaced package and its signature.
+        run(["repo-add", "-q", "-s", "-k", key, "-R", str(db), str(target)], log=log)
+        git(self.repo, "tag", "-f", "fork-deployed", self.branch)
+        self.status = "deployed"
+        self.note(f"deployed to {d['repo_name']}: {name} {version}")
+
     def deploy(self):
         kind = self.cfg.get("deploy", {}).get("kind")
         if kind == "fdroid":
             self.deploy_fdroid()
+        elif kind == "arch" and self.cfg["deploy"].get("repo_dir"):
+            self.deploy_repo()
+            if self.cfg["deploy"].get("aur"):
+                self.deploy_aur()
         elif kind == "arch":
             # Installing needs sudo; the report carries the command.
             self.status = "built, not deployed"

@@ -151,6 +151,20 @@ class NewBaseTest(unittest.TestCase):
         with self.assertRaisesRegex(fm.ForkError, "needs `branch` or `tags`"):
             self.fork({}).new_base()
 
+    def test_built_arch_package_waits_for_its_repo(self):
+        subprocess.run(["git", "-C", str(self.repo), "tag", "fork-built"], check=True)
+
+        def up_to_date(deploy):
+            fork = self.fork({"tags": "v1.*"})
+            fork.cfg["deploy"] = deploy
+            fork.args = argparse.Namespace(force=False)
+            return not fork.rebase()
+
+        self.assertTrue(up_to_date({"kind": "arch"}))
+        self.assertFalse(up_to_date({"kind": "arch", "repo_dir": "/srv/repo"}))
+        subprocess.run(["git", "-C", str(self.repo), "tag", "fork-deployed"], check=True)
+        self.assertTrue(up_to_date({"kind": "arch", "repo_dir": "/srv/repo"}))
+
 
 class SrcinfoTest(unittest.TestCase):
     SRCINFO = textwrap.dedent("""\
@@ -289,3 +303,82 @@ class AurTest(unittest.TestCase):
         log = subprocess.run(["git", "-C", new, "log", "--oneline", "master"],
                              capture_output=True, text=True, check=True).stdout
         self.assertEqual(len(log.splitlines()), 1)
+
+
+class RepoTest(unittest.TestCase):
+    def setUp(self):
+        # Short path: gpg-agent's socket lives in GNUPGHOME without a /run/user dir.
+        tmp = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(tmp.cleanup)
+        self.root = root = Path(tmp.name)
+        for name in ("STATE_ROOT", "LOG_DIR"):
+            self.addCleanup(setattr, fm, name, getattr(fm, name))
+        fm.STATE_ROOT, fm.LOG_DIR = root / "state", root / "logs"
+        gnupg = root / "g"
+        gnupg.mkdir(mode=0o700)
+        env = unittest.mock.patch.dict("os.environ", {"GNUPGHOME": str(gnupg)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.addCleanup(subprocess.run, ["gpgconf", "--kill", "all"], check=False)
+        subprocess.run(["gpg", "--batch", "--quiet", "--passphrase", "", "--quick-gen-key",
+                        "test", "ed25519", "sign", "never"], check=True, capture_output=True)
+        self.key = subprocess.run(
+            ["gpg", "--list-secret-keys", "--with-colons"], capture_output=True, text=True,
+            check=True).stdout.split("\nfpr:::::::::")[1].split(":")[0]
+        self.repo_dir = root / "repo"
+        self.repo_dir.mkdir()
+        self.git = root / "src"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.git)], check=True)
+        subprocess.run(["git", "-C", str(self.git), "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+
+    def package(self, version):
+        build = self.root / f"build-{version}"
+        build.mkdir(exist_ok=True)
+        (build / ".PKGINFO").write_text(
+            f"pkgname = demo\npkgbase = demo\npkgver = {version}\narch = any\nsize = 0\n")
+        artifact = self.root / f"demo-{version}-any.pkg.tar"
+        subprocess.run(["bsdtar", "-cf", str(artifact), "-C", str(build), ".PKGINFO"], check=True)
+        return artifact
+
+    def deploy(self, version, no_deploy=False):
+        fork = fm.Fork("demo", {"repo": str(self.git), "fork": {"branch": "main"},
+                                "deploy": {"kind": "arch", "repo_dir": str(self.repo_dir),
+                                           "repo_name": "demo", "repo_key": self.key}},
+                       argparse.Namespace(no_deploy=no_deploy, no_push=False))
+        fork.artifact = self.package(version)
+        fork.deploy()
+        return fork
+
+    def db_entries(self):
+        out = subprocess.run(["bsdtar", "-tf", str(self.repo_dir / "demo.db.tar.zst")],
+                             capture_output=True, text=True, check=True).stdout
+        return sorted(line for line in out.splitlines() if line.endswith("/"))
+
+    def test_publish_signs_and_replaces(self):
+        fork = self.deploy("1.0-1")
+        self.assertEqual(fork.status, "deployed")
+        pkg = self.repo_dir / "demo-1.0-1-any.pkg.tar"
+        subprocess.run(["gpg", "--verify", f"{pkg}.sig", str(pkg)], check=True,
+                       capture_output=True)
+        subprocess.run(["gpg", "--verify", str(self.repo_dir / "demo.db.tar.zst.sig")],
+                       check=True, capture_output=True)
+        self.deploy("1.1-1")
+        self.assertEqual(self.db_entries(), ["demo-1.1-1/"])
+        self.assertEqual(sorted(p.name for p in self.repo_dir.glob("demo-*")),
+                         ["demo-1.1-1-any.pkg.tar", "demo-1.1-1-any.pkg.tar.sig"])
+        tag = subprocess.run(["git", "-C", str(self.git), "rev-parse", "fork-deployed"],
+                             capture_output=True, check=False)
+        self.assertEqual(tag.returncode, 0)
+
+    def test_version_must_rise(self):
+        self.deploy("1.1-1")
+        for version in ("1.1-1", "1.0-1"):
+            with self.assertRaisesRegex(fm.ForkError, "not above the repo's 1.1-1"):
+                self.deploy(version)
+        self.assertEqual(self.db_entries(), ["demo-1.1-1/"])
+
+    def test_no_deploy_leaves_the_repo_alone(self):
+        fork = self.deploy("1.0-1", no_deploy=True)
+        self.assertEqual(fork.status, "built, not deployed")
+        self.assertEqual(list(self.repo_dir.iterdir()), [])

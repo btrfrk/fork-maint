@@ -8,17 +8,26 @@ agent:
   timeout_minutes: 45
   # model: ""               # codex only, passed as aisan --model
 
+# Shared by the Arch forks below; merged in with `<<: *arch_repo`.
+arch_repo: &arch_repo
+  repo_dir: /srv/<repo>/x86_64
+  repo_name: <repo>         # <repo>.db.tar.zst in repo_dir
+  repo_key: <fingerprint of the signing key in this user's gpg keyring>
+
 forks:
   azahar:
     repo: ~/src/azahar
     fork:
       remote: myfork        # optional
+    deploy:
+      <<: *arch_repo        # optional; without it the report carries pacman -U
 
   digikam:
     repo: ~/src/digikam
     fork:
       remote: myfork        # the remote arch/PKGBUILD's source= points at
     deploy:
+      <<: *arch_repo
       aur: ssh://aur@aur.archlinux.org/<package>.git    # optional
 
   fluffychat:
@@ -37,5 +46,9 @@ forks:
 
   thunderbird:
     repo: ~/src/firefox/comm
+    fork:
+      remote: myfork        # optional
     workspace:
       root_repo: ~/src/firefox
+    deploy:
+      <<: *arch_repo

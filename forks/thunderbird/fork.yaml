@@ -34,7 +34,7 @@ package:
   from: the ./mach package tarball, not Arch's source PKGBUILD
   version: <application.ini Version>.<BuildID>, computed by pkgver()
 deploy:
-  kind: arch                        # the report carries the pacman -U command
+  kind: arch                        # the pacman repo in the host config, else pacman -U in the report
   package: thunderbird-btrfrk
 deployed_check: pacman -Q thunderbird-btrfrk
 upstreaming:

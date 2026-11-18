@@ -27,7 +27,7 @@ box:
 package:
   name: digikam-btrfrk              # published on the AUR; arch/ is the package source
 deploy:
-  kind: arch                        # the report carries the pacman -U command
+  kind: arch                        # the pacman repo in the host config, else pacman -U in the report
   package: digikam-btrfrk
   # aur (host config): the AUR package's git URL; arch/ is pushed there when it changes
 deployed_check: pacman -Q digikam-btrfrk

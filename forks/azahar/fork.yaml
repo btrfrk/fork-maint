@@ -26,7 +26,7 @@ box:                                # cwd: the azahar clone in the workspace
 package:
   name: azahar-btrfrk               # provides and conflicts azahar
 deploy:
-  kind: arch                        # the report carries the pacman -U command
+  kind: arch                        # the pacman repo in the host config, else pacman -U in the report
   package: azahar-btrfrk
 deployed_check: pacman -Q azahar-btrfrk
 upstreaming: none                   # not decided

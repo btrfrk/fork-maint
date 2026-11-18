@@ -96,7 +96,12 @@ only signer and `deploy.app_id` the package, refuses a versionCode not
 above the repo's, copies the APK into `deploy.repo_dir`, runs
 `fdroid update && fdroid deploy` in the devShell and keeps `deploy.keep` APKs.
 
-`deploy.kind: arch` puts the `pacman -U` command in the report. With
+`deploy.kind: arch` with `deploy.repo_dir` signs the package with
+`deploy.repo_key` (a gpg key of the user running fork-maint), refuses a
+version not above the one in the repo, and adds it to the pacman repo
+`deploy.repo_name` in `deploy.repo_dir` with `repo-add -s -R`, which
+deletes the replaced package. Serving that directory is up to the host.
+Without `repo_dir`, the report carries the `pacman -U` command. With
 `deploy.aur`, the URL of the package's AUR repo, the tracked files of
 `arch/` are pushed there when they differ from the AUR's, with the built
 version in the PKGBUILD and a regenerated `.SRCINFO`. Where `pkgver()`
