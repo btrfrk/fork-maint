@@ -182,8 +182,9 @@ merged config and `NOTES.md` as its facts and rules.
 The turn runs inside aisan: `aisan claude <repo> --binds ... -- -p
 <prompt> --permission-mode bypassPermissions --max-turns N`, or `aisan
 codex <repo> --binds ... -- exec <prompt>`. The sandbox roots at the
-fork's checkout, read-write, and sees this repo and the day's log
-directory read-only. No keys, no SSH, no network, model calls through
+fork's checkout, read-write, and sees this repo, the day's log
+directory and the fork's `inputs` read-only. There is no toolchain:
+the agent reasons from logs and code. No keys, no SSH, no network, model calls through
 aisan's proxy. The agent can commit on the fork branch and nothing
 else; pushing, signing and deploying stay with the script and happen
 only after its rerun passed. `--no-agent` skips the turn;

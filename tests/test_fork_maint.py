@@ -103,8 +103,14 @@ class ArtifactTest(unittest.TestCase):
             self.assertFalse(old.exists())
             self.assertTrue(other.exists())
 
+    def test_agent_reads_the_inputs(self):
+        fork = fm.Fork("demo", {"repo": "/r", "fork": {"branch": "main"},
+                                "inputs": {"sdk": "/src/sdk"}},
+                       argparse.Namespace())
+        self.assertEqual(fork.agent_ro_binds(), [str(fm.REPO), str(fm.LOG_DIR), "/src/sdk"])
+
     def test_pkginfo_version(self):
-        info ="pkgname = x\npkgver = 2:9.2.0.r1.abc-3\narch = x86_64\n"
+        info = "pkgname = x\npkgver = 2:9.2.0.r1.abc-3\narch = x86_64\n"
         self.assertEqual(fm.pkginfo_version(info), ("2:9.2.0.r1.abc-3", "9.2.0.r1.abc", "3"))
         self.assertEqual(fm.pkginfo_version("pkgver = 1.0-1\n"), ("1.0-1", "1.0", "1"))
 

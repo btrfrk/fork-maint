@@ -705,12 +705,18 @@ class Fork:
 
     # -- agent --------------------------------------------------------------
 
+    def agent_ro_binds(self):
+        """Paths the agent reads but cannot write, each at its host path."""
+        inputs = (self.cfg.get("inputs") or {}).values()
+        return [str(REPO), str(LOG_DIR), *(str(p) for p in inputs)]
+
     def agent_turn(self, cfg):
         """One headless agent turn inside aisan on the fork repo.
 
-        The box roots at the repo, read-write, with this repo and the day's
-        log directory read-only. No keys, no network: the agent can commit
-        and nothing else; the rerun of the script is the judge.
+        The box roots at the repo, read-write, with this repo, the day's log
+        directory and the fork's inputs read-only. No keys, no network: the
+        agent can commit and nothing else; the rerun of the script is the
+        judge.
         """
         harness = cfg["harness"]
         record = LOG_DIR / f"{self.name}.json"
@@ -720,7 +726,7 @@ class Fork:
         prompt += f"\n\nFork: {self.name}\n"
         binds = self.state / "agent-binds.toml"
         # A JSON array of strings is a valid TOML array.
-        binds.write_text(f"ro = {json.dumps([str(REPO), str(LOG_DIR)])}\n")
+        binds.write_text(f"ro = {json.dumps(self.agent_ro_binds())}\n")
         if harness == "claude":
             argv = ["aisan", "claude", str(self.repo), "--binds", str(binds), "--",
                     "-p", prompt, "--permission-mode", "bypassPermissions",
