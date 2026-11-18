@@ -177,6 +177,17 @@ def artifact_name(pattern, artifact, fork, build_number):
     return f"{fork}-{build_number}{artifact.suffix}"
 
 
+def remove_artifacts(ws, pattern):
+    """Remove files matching the artifact pattern left by earlier builds.
+
+    The workspace persists between runs, so a versioned name from an earlier
+    build would otherwise match alongside the new one.
+    """
+    for path in glob.glob(str(ws / pattern)):
+        if os.path.isfile(path):
+            os.remove(path)
+
+
 def pkginfo_version(pkginfo):
     """(version, pkgver, pkgrel) from a package's .PKGINFO."""
     fields = dict(line.split(" = ", 1) for line in pkginfo.splitlines() if " = " in line)
@@ -469,6 +480,7 @@ class Fork:
                 )
                 if proc.returncode != 0:
                     raise ForkError(f"box keystore: keytool failed, see {self.log('env').name}")
+        remove_artifacts(self.ws, box_cfg["artifact"])
         for phase, network in (("fetch", True), ("prepare", False), ("verify", False), ("build", False)):
             log = self.log(phase)
             for command in box_cfg.get(phase) or []:

@@ -91,8 +91,20 @@ class ArtifactTest(unittest.TestCase):
         self.assertEqual(fm.artifact_name(str(path), path, "fluffychat", "26111505"),
                          "fluffychat-26111505.apk")
 
+    def test_earlier_artifacts_are_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp)
+            (ws / "out").mkdir()
+            old = ws / "out/thunderbird-btrfrk-162.0a1.1-1-x86_64.pkg.tar.zst"
+            other = ws / "out/notes.txt"
+            old.touch()
+            other.touch()
+            fm.remove_artifacts(ws, "out/thunderbird-btrfrk-*.pkg.tar.zst")
+            self.assertFalse(old.exists())
+            self.assertTrue(other.exists())
+
     def test_pkginfo_version(self):
-        info = "pkgname = x\npkgver = 2:9.2.0.r1.abc-3\narch = x86_64\n"
+        info ="pkgname = x\npkgver = 2:9.2.0.r1.abc-3\narch = x86_64\n"
         self.assertEqual(fm.pkginfo_version(info), ("2:9.2.0.r1.abc-3", "9.2.0.r1.abc", "3"))
         self.assertEqual(fm.pkginfo_version("pkgver = 1.0-1\n"), ("1.0-1", "1.0", "1"))
 
