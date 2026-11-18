@@ -23,7 +23,10 @@ The forks here:
   and subordinate ids for the user (`/etc/subuid`, `/etc/subgid`).
 - F-Droid forks: `fdroidserver` and an initialized F-Droid repo. Java and
   the Android SDK come from the fork's devShell; leave `sdk_path` unset in
-  the repo's `config.yml`.
+  the repo's `config.yml`. To restrict the deploy key to the web root with
+  `rrsync <dir>`, give `serverwebroot` relative to `<dir>`: rrsync prefixes
+  absolute paths with `<dir>`, and fdroid requires the path to end in
+  `/fdroid`.
 - Agent turns (optional): `aisan` and the `claude` or `codex` CLI.
 
 ## Setup
