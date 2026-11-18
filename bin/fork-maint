@@ -511,10 +511,11 @@ class Fork:
 
         The devShell sets ANDROID_HOME but does not put build-tools on PATH.
         """
-        return [
-            "nix", "develop", self.cfg["flake"], "-c", "sh", "-c",
-            f'exec "$ANDROID_HOME"/build-tools/*/{name} "$@"', name,
-        ]
+        return self.devshell(["sh", "-c", f'exec "$ANDROID_HOME"/build-tools/*/{name} "$@"', name])
+
+    def devshell(self, argv):
+        """argv run on the host in the fork's devShell, which keeps the host's PATH."""
+        return ["nix", "develop", self.cfg["flake"], "-c", *argv]
 
     def deploy_fdroid(self):
         d = self.cfg["deploy"]
@@ -560,8 +561,10 @@ class Fork:
         )
         for path in older[: -int(d.get("keep", 3))]:
             os.remove(path)
-        run(["fdroid", "update"], cwd=repo_dir, log=log)
-        run(["fdroid", "deploy", "-v"], cwd=repo_dir, log=log)
+        # fdroid needs java, apksigner and an SDK; with sdk_path unset in the
+        # repo's config.yml it uses the devShell's ANDROID_HOME.
+        run(self.devshell(["fdroid", "update"]), cwd=repo_dir, log=log)
+        run(self.devshell(["fdroid", "deploy", "-v"]), cwd=repo_dir, log=log)
         git(self.repo, "tag", "-f", "fork-deployed", self.branch)
         self.status = "deployed"
         self.note(f"deployed to {d['repo_dir']} as {target.name}")

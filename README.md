@@ -21,7 +21,9 @@ The forks here:
 - Nix with flakes, for forks with a `flake`.
 - Arch forks: `makepkg` and `bsdtar`; with `rootfs`, `arch-install-scripts`
   and subordinate ids for the user (`/etc/subuid`, `/etc/subgid`).
-- F-Droid forks: `fdroidserver` and an initialized F-Droid repo.
+- F-Droid forks: `fdroidserver` and an initialized F-Droid repo. Java and
+  the Android SDK come from the fork's devShell; leave `sdk_path` unset in
+  the repo's `config.yml`.
 - Agent turns (optional): `aisan` and the `claude` or `codex` CLI.
 
 ## Setup
@@ -89,7 +91,7 @@ Keys `fork-maint` reads:
 `key_alias` and `key_pass_file`, checks that `deploy.cert_sha256` is the
 only signer and `deploy.app_id` the package, refuses a versionCode not
 above the repo's, copies the APK into `deploy.repo_dir`, runs
-`fdroid update && fdroid deploy` and keeps `deploy.keep` APKs.
+`fdroid update && fdroid deploy` in the devShell and keeps `deploy.keep` APKs.
 
 `deploy.kind: arch` puts the `pacman -U` command in the report. With
 `deploy.aur`, the URL of the package's AUR repo, the tracked files of
