@@ -1,14 +1,21 @@
 # pingvin-share-x
 
-- Built with the fork's Dockerfile by the host's docker daemon, not in the
-  box. The daemon must be running, and the user needs access to its socket.
-- Two patches split `apk add` out of `backend-builder` and the final stage
-  (`backend-builder-base`, `runner-base`), so the downloads sit in stages of
-  their own that the fetch step can build. When upstream changes those
-  stages, keep the split; a new download step outside the `docker.fetch`
-  stages fails the offline build.
-- `npm ci` leaves the prisma engines in `/root/.cache/prisma`; upstream's
-  backend builder does not copy it, so `prisma generate` downloads them
-  again. A patch copies the cache.
-- The artifact is a gzipped `docker save` archive of `<image>:<BUILD_NUMBER>`.
-  The daemon keeps only the latest tag.
+- `flake.nix` builds the image with `dockerTools`, from the workspace clone
+  as input `src`; upstream's Dockerfile is not used. The image has the
+  layout of upstream's (`/opt/app`, the same entrypoint scripts), on nix's
+  glibc instead of Alpine.
+- `nixpkgs-prisma` pins the nixpkgs revision with `prisma-engines` at the
+  version in `backend/package-lock.json`. The client accepts only engines
+  built from its own commit: when upstream bumps prisma, move the pin to a
+  nixpkgs revision with that version (search nixpkgs for
+  `prisma-engines: <old> -> <new>`).
+- `importNpmLock` fetches each package by the integrity hash in the lock
+  file, so a lock change needs no hash update here. It replaces the direct
+  dependencies' ranges with store paths; the flake rewrites `overrides`
+  entries for direct dependencies to `$<name>`, or npm rejects them.
+- npm runs no install scripts (not in `allowScripts`). argon2 and sharp load
+  their prebuilt glibc modules, and prisma takes the engines from
+  `PRISMA_QUERY_ENGINE_LIBRARY` and `PRISMA_SCHEMA_ENGINE_BINARY`.
+- Prisma warns at startup that it cannot detect the libssl version. The
+  engines come from the environment, so the warning has no effect.
+- The image is tagged `pingvin-share-x:latest`.

@@ -378,6 +378,56 @@ class DockerTest(unittest.TestCase):
         self.assertIn("docker load -i", self.fork.attention[0])
 
 
+class NixTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = root = Path(tmp.name)
+        for name in ("STATE_ROOT", "LOG_DIR"):
+            self.addCleanup(setattr, fm, name, getattr(fm, name))
+        fm.STATE_ROOT, fm.LOG_DIR = root / "state", root / "logs"
+        self.git = root / "src"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.git)], check=True)
+        subprocess.run(["git", "-C", str(self.git), "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+        self.fork = fm.Fork("demo", {
+            "repo": str(self.git), "fork": {"branch": "main"}, "flake": "/forks/demo",
+            "nix": {"package": "image"}, "deploy": {"kind": "image"}},
+            argparse.Namespace(no_deploy=False, no_push=True))
+        subprocess.run(["git", "clone", "-q", str(self.git), str(self.fork.ws)], check=True)
+        self.calls = []
+        real_run = fm.run
+        store = root / "store"
+        store.mkdir()
+
+        def fake_run(argv, **kwargs):
+            if argv[0] == "git":
+                return real_run(argv, **kwargs)
+            self.calls.append(argv)
+            built = store / "0abc-demo.tar.gz"
+            built.write_bytes(b"image")
+            link = Path(argv[argv.index("--out-link") + 1])
+            link.unlink(missing_ok=True)
+            link.symlink_to(built)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        patch = unittest.mock.patch.object(fm, "run", fake_run)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_builds_the_workspace_revision(self):
+        self.fork.nix_steps()
+        [argv] = self.calls
+        rev = subprocess.run(["git", "-C", str(self.fork.ws), "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        self.assertIn("/forks/demo#image", argv)
+        self.assertEqual(argv[argv.index("--override-input") + 1:][:2],
+                         ["src", f"git+file://{self.fork.ws}?rev={rev}"])
+        build_number = fm.NOW.strftime("%y%m%d%H")
+        self.assertEqual(self.fork.artifact.name, f"demo-{build_number}.tar.gz")
+        self.assertEqual(self.fork.artifact.read_bytes(), b"image")
+
+
 class RepoTest(unittest.TestCase):
     def setUp(self):
         # Short path: gpg-agent's socket lives in GNUPGHOME without a /run/user dir.

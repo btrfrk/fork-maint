@@ -10,7 +10,7 @@ usage: fork-maint [--force] [--no-push] [--no-deploy] [--no-agent] [fork ...]
 Each fork is a directory under forks/ in this repo with a fork.yaml (see README.md).
 The host config ($XDG_CONFIG_HOME/fork-maint/config.yaml) is merged over it
 and supplies what is specific to this machine: checkouts, remotes, keys.
-Without arguments every fork that has a `box:` or `docker:` section is processed. Forks
+Without arguments every fork that has a `box:`, `docker:` or `nix:` section is processed. Forks
 are processed one at a time; a failure in one never stops the others. The
 run writes one log per step and a report to
 $XDG_STATE_HOME/fork-maintenance/<date>/.
@@ -63,6 +63,10 @@ LOG_DIR = RUN_ROOT / TODAY
 # Steps whose failure an agent turn may fix. Fetch failures are network or
 # host state; deploy failures are host state.
 AGENT_STEPS = ("rebase", "verify", "build")
+
+
+# Sections of fork.yaml that make a fork automated, one per way of building.
+BUILD_KINDS = ("box", "docker", "nix")
 
 
 class ForkError(Exception):
@@ -127,7 +131,7 @@ def load_fork(name, host):
 
 def is_automated(fork_yaml):
     cfg = yaml.safe_load(fork_yaml.read_text()) or {}
-    return "box" in cfg or "docker" in cfg
+    return any(kind in cfg for kind in BUILD_KINDS)
 
 
 def expand(value):
@@ -548,6 +552,30 @@ class Fork:
                 run(["docker", "image", "rm", f"{d['image']}:{old}"], log=log, check=False)
         git(self.repo, "tag", "-f", "fork-built", self.branch)
 
+    def nix_steps(self):
+        """Build `nix.package` of the fork's flake, with the workspace as `src`.
+
+        The nix sandbox stands in for the box: only fixed-output derivations,
+        downloads pinned by hash, have network.
+        """
+        self.build_number = NOW.strftime("%y%m%d%H")
+        package = self.cfg["nix"]["package"]
+        rev = git_out(self.ws, "rev-parse", "HEAD")
+        result = self.state / "result"
+        log = self.log("build")
+        proc = run(["nix", "build", "-L", "--no-write-lock-file", "--out-link", str(result),
+                    f"{self.cfg['flake']}#{package}",
+                    "--override-input", "src", f"git+file://{self.ws}?rev={rev}"],
+                   log=log, check=False)
+        if proc.returncode != 0:
+            self.failed_step = "build"
+            raise ForkError(f"build failed: nix build {package}, see {log.name}")
+        self.note(f"build: ok, {result.resolve().name}")
+        artifact = result.resolve()
+        # The store name of an image is <hash>-<name>.tar.gz.
+        self.store_artifact(artifact, f"{self.name}-{self.build_number}{''.join(artifact.suffixes)}")
+        git(self.repo, "tag", "-f", "fork-built", self.branch)
+
     def store_artifact(self, artifact, name):
         """Copy the build output to out/, replacing earlier builds.
 
@@ -786,7 +814,7 @@ class Fork:
 
     def run_steps(self):
         try:
-            if "box" not in self.cfg and "docker" not in self.cfg:
+            if not any(kind in self.cfg for kind in BUILD_KINDS):
                 self.status = "not automated"
                 return
             self.fetch()
@@ -795,6 +823,9 @@ class Fork:
             if "docker" in self.cfg:
                 self.workspace()
                 self.docker_steps()
+            elif "nix" in self.cfg:
+                self.workspace()
+                self.nix_steps()
             else:
                 self.environment()
                 self.workspace()

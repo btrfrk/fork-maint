@@ -20,12 +20,9 @@ patches: git log --oneline <upstream>/main..working
   # build(docker): split the runtime packages into a runner-base stage
   # build(docker): split the backend builder's packages into a stage
   # build(docker): give prisma generate the engines npm ci downloaded
-docker:                             # built by the host's docker daemon, cwd the workspace clone
-  # Stages that download: built with network and tagged <image>-fetch:<stage>,
-  # then substituted for the stages in the offline build of the image.
-  fetch: [frontend-dependencies, backend-dependencies, backend-builder-base, runner-base]
-  refresh: [runner-base]            # rebuilt on every run: apk upgrade
-  image: pingvin-share-x            # tagged <image>:<BUILD_NUMBER>
+flake: .                            # the image, from the workspace clone as input `src`
+nix:
+  package: image                    # dockerTools; the sandbox fetches only hash-pinned sources
 deploy:
   kind: image                       # the report carries the docker load command
 upstreaming: none                   # not decided

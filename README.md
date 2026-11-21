@@ -92,6 +92,7 @@ Keys `fork-maint` reads:
 | `box.prepare`, `box.verify`, `box.build` | shell commands without network, in order in the workspace; `BUILD_NUMBER` is the UTC `yymmddHH`, `BOX_KEYSTORE` a throwaway key, `FORK_DIR` the fork's directory here |
 | `box.artifact` | path or glob of the build output in the workspace; a glob keeps the file name |
 | `docker.fetch`, `docker.refresh`, `docker.image`, `docker.file` | in place of `box`: build the image with the host's docker daemon, below |
+| `nix.package` | in place of `box`: build this package of `flake` with `nix build`, below |
 | `deploy.kind` | `fdroid`, `arch` or `image`, below |
 
 `deploy.kind: fdroid` re-signs the APK with `deploy.keystore`,
@@ -122,7 +123,7 @@ The host config's `agent` section configures agent turns, below.
 ## A run
 
 `fork-maint [--force] [--no-push] [--no-deploy] [--no-agent] [fork ...]`
-processes the named forks, or every fork with a `box:` or `docker:` section, one at a
+processes the named forks, or every fork with a `box:`, `docker:` or `nix:` section, one at a
 time. A failure in one never stops the others. `--force` runs a fork
 even when nothing moved, `--no-push` skips pushing the branch and the
 AUR, `--no-deploy` stops after signing.
@@ -188,12 +189,19 @@ would rerun them), and tagged `<docker.image>:<BUILD_NUMBER>`; a gzipped
 `docker save` archive goes to `out/`. The daemon's isolation stands in for
 the box: no bwrap, no devShell, no Arch root.
 
+With `nix:`, the flake builds the artifact itself: `nix build
+<flake>#<nix.package>`, with the flake input `src` overridden by the
+workspace clone at the branch tip. The nix sandbox stands in for the box:
+only fixed-output derivations, downloads pinned by hash, have network. The
+result is copied to `out/` as `<fork>-<BUILD_NUMBER>` with the result's
+suffixes.
+
 Output goes to `$XDG_STATE_HOME/fork-maintenance/<date>/`: one log per
 step, `report.md`, and per fork `<fork>.json` (status, failing step,
 paths) and `<fork>-config.yaml` (the merged config). Tags in the fork
 repo: `fork-built` after a successful build, `fork-deployed` after an
 automatic deploy. A rebase conflict is aborted and reported; the branch
-is left as it was. A fork without `box:` or `docker:` is reported as not automated.
+is left as it was. A fork without `box:`, `docker:` or `nix:` is reported as not automated.
 
 ## The agent on failure
 
@@ -217,8 +225,8 @@ only after its rerun passed. `--no-agent` skips the turn;
 
 ## Rules
 
-- Flakes pin toolchains only. Paths, keys and credentials come from the
-  host config, as environment variables or Gradle properties.
+- Flakes pin toolchains, except for forks built with `nix:`, whose flake
+  builds the artifact. Paths, keys and credentials come from the host config, as environment variables or Gradle properties.
 - No secrets in this repo, and no host paths.
 - Arch forks are plain PKGBUILDs installed with `pacman -U`. There is no
   package repository.
