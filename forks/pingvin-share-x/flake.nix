@@ -28,6 +28,28 @@
       nodejs = pkgs.nodejs_24;
       version = (lib.importJSON "${src}/package.json").version;
 
+      # The image follows upstream's Dockerfile and entrypoint scripts by hand.
+      # When they change, the build stops until the image here is checked
+      # against them and `reviewedRecipe` is updated (sha256sum of each file).
+      reviewedRecipe = {
+        "Dockerfile" = "db7c577eda7ee36ee0dd726392d49746414693f3f708eb8f1af63f4d1861737c";
+        "scripts/docker/create-user.sh" = "90fe6f36fc02447f46402f68f9fbb554b98a081cfc32919708c950bfd0e1c784";
+        "scripts/docker/entrypoint.sh" = "e689aea5276e2a0ee2f448ec1d20b3838b5057fe54f68ff26624ef413bec9551";
+      };
+      recipe = lib.genAttrs (
+        [ "Dockerfile" ]
+        ++ map (name: "scripts/docker/${name}") (
+          builtins.attrNames (builtins.readDir "${src}/scripts/docker")
+        )
+      ) (file: builtins.hashFile "sha256" "${src}/${file}");
+      changedRecipe = lib.filter (file: recipe.${file} or null != reviewedRecipe.${file} or null) (
+        lib.unique (lib.attrNames recipe ++ lib.attrNames reviewedRecipe)
+      );
+      checkRecipe = lib.throwIf (changedRecipe != [ ]) (
+        "upstream changed ${lib.concatStringsSep ", " changedRecipe}; update the image in flake.nix "
+        + "to match, then reviewedRecipe: ${builtins.toJSON recipe}"
+      );
+
       prismaEnv = {
         PRISMA_QUERY_ENGINE_LIBRARY = "${engines}/lib/libquery_engine.node";
         PRISMA_SCHEMA_ENGINE_BINARY = "${engines}/bin/schema-engine";
@@ -100,7 +122,7 @@
         }
       );
 
-      image = pkgs.dockerTools.buildLayeredImage {
+      image = checkRecipe pkgs.dockerTools.buildLayeredImage {
         name = "pingvin-share-x";
         tag = "latest";
         contents = [

@@ -17,9 +17,6 @@ patches: git log --oneline <upstream>/main..working
   # feat(share): exclude lookalike characters from generated ids
   # fix(pwa): exclude dynamic-css-manifest.json from precache
   # feat(upload): accept files shared to the installed PWA
-  # build(docker): split the runtime packages into a runner-base stage
-  # build(docker): split the backend builder's packages into a stage
-  # build(docker): give prisma generate the engines npm ci downloaded
 flake: .                            # the image, from the workspace clone as input `src`
 nix:
   package: image                    # dockerTools; the sandbox fetches only hash-pinned sources

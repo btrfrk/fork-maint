@@ -28,8 +28,6 @@ The forks here:
   `rrsync <dir>`, give `serverwebroot` relative to `<dir>`: rrsync prefixes
   absolute paths with `<dir>`, and fdroid requires the path to end in
   `/fdroid`.
-- Docker forks: a running docker daemon with buildx, and access to its
-  socket.
 - Agent turns (optional): `aisan` and the `claude` or `codex` CLI.
 
 ## Setup
@@ -91,7 +89,6 @@ Keys `fork-maint` reads:
 | `box.fetch` | shell commands with network: fill caches from lock files and pinned versions |
 | `box.prepare`, `box.verify`, `box.build` | shell commands without network, in order in the workspace; `BUILD_NUMBER` is the UTC `yymmddHH`, `BOX_KEYSTORE` a throwaway key, `FORK_DIR` the fork's directory here |
 | `box.artifact` | path or glob of the build output in the workspace; a glob keeps the file name |
-| `docker.fetch`, `docker.refresh`, `docker.image`, `docker.file` | in place of `box`: build the image with the host's docker daemon, below |
 | `nix.package` | in place of `box`: build this package of `flake` with `nix build`, below |
 | `deploy.kind` | `fdroid`, `arch` or `image`, below |
 
@@ -123,7 +120,7 @@ The host config's `agent` section configures agent turns, below.
 ## A run
 
 `fork-maint [--force] [--no-push] [--no-deploy] [--no-agent] [fork ...]`
-processes the named forks, or every fork with a `box:`, `docker:` or `nix:` section, one at a
+processes the named forks, or every fork with a `box:` or `nix:` section, one at a
 time. A failure in one never stops the others. `--force` runs a fork
 even when nothing moved, `--no-push` skips pushing the branch and the
 AUR, `--no-deploy` stops after signing.
@@ -178,17 +175,6 @@ nix develop ~/src/fork-maint/<fork> -i --keep HOME -c <command>
 Plain `nix develop` prepends to the host `PATH`, so a missing tool would
 come from `/usr/bin` unnoticed.
 
-With `docker:` in place of `box:`, the host's docker daemon builds the
-fork's Dockerfile (`docker.file`, default `Dockerfile`) in the workspace
-clone. The stages named in `docker.fetch` are the ones that download; they
-are built first, with network, and tagged `<docker.image>-fetch:<stage>`,
-those in `docker.refresh` without the build cache. The image is then built
-with `--network=none`, those images in place of the stages (`--build-context`;
-the network mode is part of a `RUN` step's cache key, so the cache alone
-would rerun them), and tagged `<docker.image>:<BUILD_NUMBER>`; a gzipped
-`docker save` archive goes to `out/`. The daemon's isolation stands in for
-the box: no bwrap, no devShell, no Arch root.
-
 With `nix:`, the flake builds the artifact itself: `nix build
 <flake>#<nix.package>`, with the flake input `src` overridden by the
 workspace clone at the branch tip. The nix sandbox stands in for the box:
@@ -201,7 +187,7 @@ step, `report.md`, and per fork `<fork>.json` (status, failing step,
 paths) and `<fork>-config.yaml` (the merged config). Tags in the fork
 repo: `fork-built` after a successful build, `fork-deployed` after an
 automatic deploy. A rebase conflict is aborted and reported; the branch
-is left as it was. A fork without `box:`, `docker:` or `nix:` is reported as not automated.
+is left as it was. A fork without `box:` or `nix:` is reported as not automated.
 
 ## The agent on failure
 

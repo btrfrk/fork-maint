@@ -10,7 +10,7 @@ usage: fork-maint [--force] [--no-push] [--no-deploy] [--no-agent] [fork ...]
 Each fork is a directory under forks/ in this repo with a fork.yaml (see README.md).
 The host config ($XDG_CONFIG_HOME/fork-maint/config.yaml) is merged over it
 and supplies what is specific to this machine: checkouts, remotes, keys.
-Without arguments every fork that has a `box:`, `docker:` or `nix:` section is processed. Forks
+Without arguments every fork that has a `box:` or `nix:` section is processed. Forks
 are processed one at a time; a failure in one never stops the others. The
 run writes one log per step and a report to
 $XDG_STATE_HOME/fork-maintenance/<date>/.
@@ -66,7 +66,7 @@ AGENT_STEPS = ("rebase", "verify", "build")
 
 
 # Sections of fork.yaml that make a fork automated, one per way of building.
-BUILD_KINDS = ("box", "docker", "nix")
+BUILD_KINDS = ("box", "nix")
 
 
 class ForkError(Exception):
@@ -508,50 +508,6 @@ class Fork:
         self.store_artifact(artifact, artifact_name(pattern, artifact, self.name, build_number))
         git(self.repo, "tag", "-f", "fork-built", self.branch)
 
-    def docker_steps(self):
-        """Build the image with the host's docker daemon, from the workspace.
-
-        The `fetch` targets are the stages that download (npm ci, apk). They
-        are built with network and tagged, and the image is built with
-        `--network=none` and those images in place of the stages: the network
-        mode is part of a RUN step's cache key, so the build cache alone would
-        rerun them. A step outside these stages that downloads fails.
-        """
-        d = self.cfg["docker"]
-        self.build_number = NOW.strftime("%y%m%d%H")
-        tag = f"{d['image']}:{self.build_number}"
-        dockerfile = ["-f", d.get("file", "Dockerfile")]
-        refresh = d.get("refresh") or []
-        log = self.log("fetch")
-        contexts = []
-        for target in d.get("fetch") or []:
-            no_cache = ["--no-cache-filter", target] if target in refresh else []
-            stage = f"{d['image']}-fetch:{target}"
-            proc = run(["docker", "build", *dockerfile, "--target", target, *no_cache,
-                        "-t", stage, "."], cwd=self.ws, log=log, check=False)
-            if proc.returncode != 0:
-                self.failed_step = "fetch"
-                raise ForkError(f"fetch failed: docker build --target {target}, see {log.name}")
-            contexts += ["--build-context", f"{target}=docker-image://{stage}"]
-        self.note("fetch: ok (network)")
-        log = self.log("build")
-        proc = run(["docker", "build", *dockerfile, "--network=none", *contexts, "-t", tag, "."],
-                   cwd=self.ws, log=log, check=False)
-        if proc.returncode != 0:
-            self.failed_step = "build"
-            raise ForkError(f"build failed: docker build --network=none, see {log.name}")
-        self.note(f"build: ok, {tag}")
-        archive = self.ws / "image.tar.gz"
-        run(["sh", "-c", 'set -o pipefail; docker save "$1" | gzip > "$2"', "sh", tag, str(archive)],
-            log=log)
-        self.store_artifact(archive, f"{self.name}-{self.build_number}.tar.gz")
-        archive.unlink()
-        # Earlier builds stay in the daemon's store under their own tags.
-        for old in run(["docker", "image", "ls", "--format", "{{.Tag}}", d["image"]]).stdout.split():
-            if old != self.build_number:
-                run(["docker", "image", "rm", f"{d['image']}:{old}"], log=log, check=False)
-        git(self.repo, "tag", "-f", "fork-built", self.branch)
-
     def nix_steps(self):
         """Build `nix.package` of the fork's flake, with the workspace as `src`.
 
@@ -820,10 +776,7 @@ class Fork:
             self.fetch()
             if not self.rebase():
                 return
-            if "docker" in self.cfg:
-                self.workspace()
-                self.docker_steps()
-            elif "nix" in self.cfg:
+            if "nix" in self.cfg:
                 self.workspace()
                 self.nix_steps()
             else:
