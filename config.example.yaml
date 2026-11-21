@@ -44,6 +44,13 @@ forks:
       key_pass_file: ~/keys/apk-signing.pass
       cert_sha256: <sha256 of the signing certificate, as apksigner prints it>
 
+  pingvin-share-x:
+    repo: ~/src/pingvin-share-x
+    upstream:
+      remote: upstream      # the remote for smp46/pingvin-share-x
+    fork:
+      remote: myfork        # optional
+
   thunderbird:
     repo: ~/src/firefox/comm
     fork:

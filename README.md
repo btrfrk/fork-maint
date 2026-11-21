@@ -13,6 +13,7 @@ The forks here:
 | `azahar` | Azahar master | touch button in touch-from-button maps | local Arch package |
 | `digikam` | digiKam master | quick filter toolbar, "Open With External Editor" | Arch package on the AUR |
 | `fluffychat` | FluffyChat main | personal chat names, a Matrix SDK fix, release build setup | APK in an F-Droid repo |
+| `pingvin-share-x` | pingvin-share-x main | image viewer, PWA share target, share id alphabet | docker image archive |
 | `thunderbird` | comm-central main | message zoom pref (bug 1689030) | local Arch package |
 
 ## Requirements
@@ -27,6 +28,8 @@ The forks here:
   `rrsync <dir>`, give `serverwebroot` relative to `<dir>`: rrsync prefixes
   absolute paths with `<dir>`, and fdroid requires the path to end in
   `/fdroid`.
+- Docker forks: a running docker daemon with buildx, and access to its
+  socket.
 - Agent turns (optional): `aisan` and the `claude` or `codex` CLI.
 
 ## Setup
@@ -88,7 +91,8 @@ Keys `fork-maint` reads:
 | `box.fetch` | shell commands with network: fill caches from lock files and pinned versions |
 | `box.prepare`, `box.verify`, `box.build` | shell commands without network, in order in the workspace; `BUILD_NUMBER` is the UTC `yymmddHH`, `BOX_KEYSTORE` a throwaway key, `FORK_DIR` the fork's directory here |
 | `box.artifact` | path or glob of the build output in the workspace; a glob keeps the file name |
-| `deploy.kind` | `fdroid` or `arch`, below |
+| `docker.fetch`, `docker.refresh`, `docker.image`, `docker.file` | in place of `box`: build the image with the host's docker daemon, below |
+| `deploy.kind` | `fdroid`, `arch` or `image`, below |
 
 `deploy.kind: fdroid` re-signs the APK with `deploy.keystore`,
 `key_alias` and `key_pass_file`, checks that `deploy.cert_sha256` is the
@@ -107,6 +111,9 @@ Without `repo_dir`, the report carries the `pacman -U` command. With
 version in the PKGBUILD and a regenerated `.SRCINFO`. Where `pkgver()`
 computes the version, a new version alone is not a change.
 
+`deploy.kind: image` leaves the image archive in `out/`; the report
+carries the `docker load` command.
+
 `patches`, `package`, `deployed_check` and `upstreaming` are notes for
 whoever maintains the fork by hand; the script ignores them.
 
@@ -115,7 +122,7 @@ The host config's `agent` section configures agent turns, below.
 ## A run
 
 `fork-maint [--force] [--no-push] [--no-deploy] [--no-agent] [fork ...]`
-processes the named forks, or every fork with a `box:` section, one at a
+processes the named forks, or every fork with a `box:` or `docker:` section, one at a
 time. A failure in one never stops the others. `--force` runs a fork
 even when nothing moved, `--no-push` skips pushing the branch and the
 AUR, `--no-deploy` stops after signing.
@@ -170,12 +177,23 @@ nix develop ~/src/fork-maint/<fork> -i --keep HOME -c <command>
 Plain `nix develop` prepends to the host `PATH`, so a missing tool would
 come from `/usr/bin` unnoticed.
 
+With `docker:` in place of `box:`, the host's docker daemon builds the
+fork's Dockerfile (`docker.file`, default `Dockerfile`) in the workspace
+clone. The stages named in `docker.fetch` are the ones that download; they
+are built first, with network, and tagged `<docker.image>-fetch:<stage>`,
+those in `docker.refresh` without the build cache. The image is then built
+with `--network=none`, those images in place of the stages (`--build-context`;
+the network mode is part of a `RUN` step's cache key, so the cache alone
+would rerun them), and tagged `<docker.image>:<BUILD_NUMBER>`; a gzipped
+`docker save` archive goes to `out/`. The daemon's isolation stands in for
+the box: no bwrap, no devShell, no Arch root.
+
 Output goes to `$XDG_STATE_HOME/fork-maintenance/<date>/`: one log per
 step, `report.md`, and per fork `<fork>.json` (status, failing step,
 paths) and `<fork>-config.yaml` (the merged config). Tags in the fork
 repo: `fork-built` after a successful build, `fork-deployed` after an
 automatic deploy. A rebase conflict is aborted and reported; the branch
-is left as it was. A fork without `box:` is reported as not automated.
+is left as it was. A fork without `box:` or `docker:` is reported as not automated.
 
 ## The agent on failure
 

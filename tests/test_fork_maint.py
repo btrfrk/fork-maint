@@ -74,10 +74,13 @@ class LoadForkTest(unittest.TestCase):
         with self.assertRaisesRegex(fm.ForkError, r"not set: repo; add under forks\.demo"):
             fm.load_fork("demo", {})
 
-    def test_has_box(self):
-        self.assertTrue(fm.has_box(self.forks / "demo/fork.yaml"))
-        (self.forks / "demo/fork.yaml").write_text("repo: null\n# box: in a comment\n")
-        self.assertFalse(fm.has_box(self.forks / "demo/fork.yaml"))
+    def test_is_automated(self):
+        fork_yaml = self.forks / "demo/fork.yaml"
+        self.assertTrue(fm.is_automated(fork_yaml))
+        fork_yaml.write_text("repo: null\ndocker:\n  image: demo\n")
+        self.assertTrue(fm.is_automated(fork_yaml))
+        fork_yaml.write_text("repo: null\n# box: in a comment\n")
+        self.assertFalse(fm.is_automated(fork_yaml))
 
 
 class ArtifactTest(unittest.TestCase):
@@ -322,6 +325,57 @@ class AurTest(unittest.TestCase):
         log = subprocess.run(["git", "-C", new, "log", "--oneline", "master"],
                              capture_output=True, text=True, check=True).stdout
         self.assertEqual(len(log.splitlines()), 1)
+
+
+class DockerTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        for name in ("STATE_ROOT", "LOG_DIR"):
+            self.addCleanup(setattr, fm, name, getattr(fm, name))
+        fm.STATE_ROOT, fm.LOG_DIR = root / "state", root / "logs"
+        self.git = root / "src"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.git)], check=True)
+        subprocess.run(["git", "-C", str(self.git), "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+        self.fork = fm.Fork("demo", {
+            "repo": str(self.git), "fork": {"branch": "main"},
+            "docker": {"fetch": ["deps", "base"], "refresh": ["base"], "image": "demo"},
+            "deploy": {"kind": "image"}}, argparse.Namespace(no_deploy=False, no_push=True))
+        self.fork.ws.mkdir(parents=True)
+        self.calls = []
+        real_run = fm.run
+
+        def fake_run(argv, **kwargs):
+            if argv[0] == "git":
+                return real_run(argv, **kwargs)
+            self.calls.append(argv)
+            if argv[0] == "sh":
+                Path(argv[-1]).write_bytes(b"image")
+            stdout = "old\n" + fm.NOW.strftime("%y%m%d%H") if argv[1:3] == ["image", "ls"] else ""
+            return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+        patch = unittest.mock.patch.object(fm, "run", fake_run)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_fetch_stages_replace_the_stages_offline(self):
+        self.fork.docker_steps()
+        builds = [argv for argv in self.calls if argv[1] == "build"]
+        self.assertEqual(builds[0], ["docker", "build", "-f", "Dockerfile", "--target", "deps",
+                                     "-t", "demo-fetch:deps", "."])
+        self.assertIn("--no-cache-filter", builds[1])
+        self.assertNotIn("--network=none", builds[1])
+        offline = builds[2]
+        self.assertIn("--network=none", offline)
+        self.assertIn("deps=docker-image://demo-fetch:deps", offline)
+        self.assertIn("base=docker-image://demo-fetch:base", offline)
+        self.assertEqual(self.fork.artifact.read_bytes(), b"image")
+        self.assertIn(["docker", "image", "rm", "demo:old"], self.calls)
+        self.fork.deploy()
+        self.assertEqual(self.fork.status, "built, not deployed")
+        self.assertIn("docker load -i", self.fork.attention[0])
 
 
 class RepoTest(unittest.TestCase):

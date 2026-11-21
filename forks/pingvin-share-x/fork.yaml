@@ -1,0 +1,31 @@
+name: pingvin-share-x
+repo: null                          # the pingvin-share-x checkout
+upstream:
+  remote: null                      # https://github.com/smp46/pingvin-share-x.git
+  track:
+    branch: main
+fork:
+  branch: working
+  # remote (host config): pushed after a successful build
+patches: git log --oneline <upstream>/main..working
+  # fix(files): skip view counting for user recipients
+  # refactor(fileTree): export tree building, sorting and flattening
+  # feat(share): image viewer, opt-in via ?view
+  # refactor(share): move zip download polling into a hook
+  # feat(viewer): navigate multi-image shares
+  # feat(share): open image-only shares in the image viewer
+  # feat(share): exclude lookalike characters from generated ids
+  # fix(pwa): exclude dynamic-css-manifest.json from precache
+  # feat(upload): accept files shared to the installed PWA
+  # build(docker): split the runtime packages into a runner-base stage
+  # build(docker): split the backend builder's packages into a stage
+  # build(docker): give prisma generate the engines npm ci downloaded
+docker:                             # built by the host's docker daemon, cwd the workspace clone
+  # Stages that download: built with network and tagged <image>-fetch:<stage>,
+  # then substituted for the stages in the offline build of the image.
+  fetch: [frontend-dependencies, backend-dependencies, backend-builder-base, runner-base]
+  refresh: [runner-base]            # rebuilt on every run: apk upgrade
+  image: pingvin-share-x            # tagged <image>:<BUILD_NUMBER>
+deploy:
+  kind: image                       # the report carries the docker load command
+upstreaming: none                   # not decided
